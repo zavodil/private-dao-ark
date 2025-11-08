@@ -59,21 +59,33 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
 
   const verifyProof = async (voteHash: string, proofPath: string[]): Promise<boolean> => {
     try {
-      // Start with the vote hash (leaf)
-      let currentHash = voteHash;
+      // Since we don't know if the current node is left or right at each level,
+      // we try all possible orderings (2^depth paths) and accept if any matches root
 
-      // Traverse up the tree using sibling hashes
-      for (const sibling of proofPath) {
-        // Combine current hash with sibling (order doesn't matter for verification,
-        // but in the actual tree it depends on left/right position)
-        // For simplicity, we hash them in alphabetical order
-        const hashes = [currentHash, sibling].sort();
-        const combined = hashes[0] + hashes[1];
-        currentHash = await sha256(combined);
-      }
+      const tryAllPaths = async (hash: string, remainingPath: string[]): Promise<boolean> => {
+        // Base case: no more siblings, check if we reached the root
+        if (remainingPath.length === 0) {
+          return hash === merkleRoot;
+        }
 
-      // Check if computed root matches the stored merkle root
-      return currentHash === merkleRoot;
+        const [sibling, ...rest] = remainingPath;
+
+        // Try hash + sibling (hash on left, sibling on right)
+        const leftFirst = await sha256(hash + sibling);
+        if (await tryAllPaths(leftFirst, rest)) {
+          return true;
+        }
+
+        // Try sibling + hash (sibling on left, hash on right)
+        const rightFirst = await sha256(sibling + hash);
+        if (await tryAllPaths(rightFirst, rest)) {
+          return true;
+        }
+
+        return false;
+      };
+
+      return await tryAllPaths(voteHash, proofPath);
     } catch (err) {
       console.error('Verification error:', err);
       return false;

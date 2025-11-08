@@ -171,9 +171,13 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
         if (successValue) {
           // SuccessValue is base64 encoded
           const decodedValue = atob(successValue);
-          console.log('📝 Decoded value:', decodedValue);
-          // Parse u64 from JSON - KEEP AS STRING to preserve full precision
-          timestamp = JSON.parse(decodedValue).toString();
+          console.log('📝 Decoded value (raw string):', decodedValue);
+
+          // Parse timestamp as string directly from JSON to preserve full u64 precision
+          // Do NOT use JSON.parse() as it converts to Number and loses precision
+          // Just extract the number string from JSON manually
+          timestamp = decodedValue.trim();
+
           console.log('✅ Received timestamp from contract (as string):', timestamp);
         } else {
           console.warn('⚠️ Could not find SuccessValue in transaction result');

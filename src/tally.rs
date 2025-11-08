@@ -296,6 +296,7 @@ fn build_merkle_tree_with_proofs(votes_data: &[VoteData]) -> (String, Vec<Merkle
                 left // Duplicate if odd
             };
 
+            // Combine in fixed order (left, right) - standard merkle tree approach
             let mut hasher = Sha256::new();
             hasher.update(left.as_bytes());
             hasher.update(right.as_bytes());
