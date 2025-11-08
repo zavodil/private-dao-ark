@@ -23,6 +23,14 @@ export type QuorumType =
   | { Percentage: { min_percentage: number } }
   | { PercentageOfVoters: { min_yes_percentage: number } };
 
+export interface MerkleProof {
+  voter: string;
+  vote_index: number;
+  vote_hash: string;
+  proof_path: string[];
+  timestamp: number;
+}
+
 export interface TallyResult {
   quorum_met: boolean;
   yes_count: number | null; // Only present if quorum met
@@ -30,11 +38,11 @@ export interface TallyResult {
   total_votes: number;
   tee_attestation: string;
   votes_merkle_root: string;
+  merkle_proofs: MerkleProof[];
 }
 
 export interface Vote {
   user: string;
   encrypted_vote: string;
-  nonce: string;
   timestamp: number;
 }

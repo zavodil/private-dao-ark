@@ -232,6 +232,47 @@ impl PrivateDAO {
         log!("TESTING: Owner removed {} from DAO", account_id);
     }
 
+    /// Migrate state to new format (owner-only)
+    ///
+    /// **FOR TESTING ONLY**: Recreates all storage collections with new format.
+    /// Use this after contract upgrade when state format changed.
+    ///
+    /// WARNING: This will clear all proposals and votes!
+    /// Members and pubkeys are preserved.
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate_state() -> Self {
+        // Get old state
+        let old_state: PrivateDAO = env::state_read().expect("Failed to read state");
+
+        // Verify caller is owner
+        assert_eq!(
+            env::predecessor_account_id(),
+            old_state.owner,
+            "Only owner can migrate"
+        );
+
+        // Create new state with fresh collections
+        let new_state = Self {
+            owner: old_state.owner.clone(),
+            name: old_state.name.clone(),
+            membership_mode: old_state.membership_mode.clone(),
+            members: old_state.members, // Keep members
+            member_count: old_state.member_count,
+            user_pubkeys: old_state.user_pubkeys, // Keep pubkeys
+            proposals: UnorderedMap::new(b"P"), // New prefix to avoid conflicts
+            next_proposal_id: 1,
+            votes: LookupMap::new(b"V"), // New prefix
+        };
+
+        log!(
+            "MIGRATION: State migrated. Members: {}, Proposals cleared",
+            new_state.member_count
+        );
+
+        new_state
+    }
+
     /// Complete join after pre-approval (Private DAO)
     ///
     /// After owner adds member, user must call this to derive their key
@@ -335,22 +376,21 @@ impl PrivateDAO {
     ///
     /// # Arguments
     /// * `proposal_id` - Proposal ID
-    /// * `encrypted_vote` - Encrypted vote ("yes" or "no", encrypted with user's pubkey)
-    /// * `nonce` - Random nonce used for encryption (hex string)
+    /// * `encrypted_vote` - Encrypted vote ("yes" or "no", encrypted with user's pubkey using ECIES)
     ///
     /// # Payment
     /// Requires 0.002 NEAR for storage
     ///
     /// # Notes
-    /// - Vote is encrypted client-side using user's public key
-    /// - Multiple votes allowed (last vote counts)
+    /// - Vote is encrypted client-side using ECIES (secp256k1 + AES-256-GCM)
+    /// - ECIES includes random nonce inside ciphertext (no separate nonce needed)
+    /// - Multiple votes allowed (last real vote counts)
     /// - User can also send dummy votes for privacy (any ciphertext that doesn't decrypt to "yes"/"no")
     #[payable]
     pub fn cast_vote(
         &mut self,
         proposal_id: u64,
         encrypted_vote: String,
-        nonce: String,
     ) {
         let voter = env::predecessor_account_id();
         let attached = env::attached_deposit();
@@ -394,7 +434,6 @@ impl PrivateDAO {
         let vote = Vote {
             user: voter.clone(),
             encrypted_vote,
-            nonce,
             timestamp: env::block_timestamp(),
         };
 
@@ -687,7 +726,8 @@ impl PrivateDAO {
                         no_count: Some(no_count),
                         total_votes: response.total_votes,
                         tee_attestation: response.tee_attestation,
-                        votes_merkle_root: response.votes_merkle_root,
+                        votes_merkle_root: response.votes_merkle_root.clone(),
+                        merkle_proofs: response.merkle_proofs.clone(),
                     });
                 } else {
                     log!(
@@ -696,8 +736,17 @@ impl PrivateDAO {
                         response.total_votes
                     );
 
-                    // Quorum not met - hide vote counts
-                    proposal.status = ProposalStatus::Rejected;
+                    // Quorum not met - check if deadline passed
+                    let deadline_passed = env::block_timestamp() >= proposal.deadline;
+
+                    if deadline_passed {
+                        // Deadline passed + no quorum = Rejected
+                        proposal.status = ProposalStatus::Rejected;
+                        log!("Proposal {} rejected: deadline passed without reaching quorum", proposal_id);
+                    } else {
+                        // Deadline not passed - keep Active to allow more votes
+                        log!("Proposal {} remains active: quorum not met but deadline not passed", proposal_id);
+                    }
 
                     proposal.tally_result = Some(TallyResult {
                         quorum_met: false,
@@ -705,7 +754,8 @@ impl PrivateDAO {
                         no_count: None,
                         total_votes: response.total_votes,
                         tee_attestation: response.tee_attestation,
-                        votes_merkle_root: response.votes_merkle_root,
+                        votes_merkle_root: response.votes_merkle_root.clone(),
+                        merkle_proofs: response.merkle_proofs.clone(),
                     });
                 }
 
@@ -791,5 +841,33 @@ impl PrivateDAO {
             .get(&proposal_id)
             .map(|v| v.len())
             .unwrap_or(0)
+    }
+
+    /// Get merkle proofs for user's votes in a proposal
+    ///
+    /// Returns proofs for all votes cast by the caller in the specified proposal.
+    /// Use this to verify that your votes were included in the tally.
+    ///
+    /// Returns empty Vec if proposal not finalized or user has no votes.
+    pub fn get_my_vote_proofs(&self, proposal_id: u64) -> Vec<MerkleProof> {
+        let caller = env::predecessor_account_id();
+
+        // Get proposal
+        let proposal = match self.proposals.get(&proposal_id) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        // Check if finalized
+        let tally_result = match proposal.tally_result {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+
+        // Filter proofs for this user
+        tally_result.merkle_proofs
+            .into_iter()
+            .filter(|proof| proof.voter == caller.as_str())
+            .collect()
     }
 }

@@ -63,7 +63,18 @@ pub struct Vote {
     #[schemars(with = "String")]
     pub user: AccountId,
     pub encrypted_vote: String,
-    pub nonce: String,
+    pub timestamp: u64,
+}
+
+/// Merkle proof for vote verification
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, JsonSchema, Clone, Debug)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct MerkleProof {
+    pub voter: String,
+    pub vote_index: u64,
+    pub vote_hash: String,
+    pub proof_path: Vec<String>,
     pub timestamp: u64,
 }
 
@@ -80,6 +91,8 @@ pub struct TallyResult {
     pub total_votes: u64,
     pub tee_attestation: String,
     pub votes_merkle_root: String,
+    /// Merkle proofs for vote verification
+    pub merkle_proofs: Vec<MerkleProof>,
 }
 
 /// DAO information
@@ -121,4 +134,6 @@ pub struct TallyResponse {
     pub total_votes: u64,
     pub tee_attestation: String,
     pub votes_merkle_root: String,
+    /// Merkle proofs for vote verification
+    pub merkle_proofs: Vec<MerkleProof>,
 }

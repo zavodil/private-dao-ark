@@ -31,6 +31,15 @@ export const ProposalList: React.FC<ProposalListProps> = ({
   const fetchProposals = async () => {
     try {
       const proposalsList = await viewMethod('get_proposals', { from_index: 0, limit: 50 });
+
+      // Handle null or non-array response
+      if (!proposalsList || !Array.isArray(proposalsList)) {
+        console.warn('Invalid proposals response:', proposalsList);
+        setProposals([]);
+        setLoading(false);
+        return;
+      }
+
       setProposals(proposalsList as Proposal[]);
 
       // Fetch vote counts for each proposal
@@ -158,8 +167,8 @@ export const ProposalList: React.FC<ProposalListProps> = ({
               </div>
             </div>
 
-            {/* Show finalize button for Active proposals */}
-            {proposal.status === 'Active' && (
+            {/* Show finalize button for Active proposals that haven't been tallied yet */}
+            {proposal.status === 'Active' && !proposal.tally_result && (
               <div className="finalize-section" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
                 <button
                   onClick={(e) => {
@@ -177,6 +186,19 @@ export const ProposalList: React.FC<ProposalListProps> = ({
                     Waiting for at least one vote...
                   </p>
                 )}
+              </div>
+            )}
+
+            {/* Show info if Active but already tallied (quorum not met yet) */}
+            {proposal.status === 'Active' && proposal.tally_result && !proposal.tally_result.quorum_met && (
+              <div className="quorum-pending" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
+                <p style={{ color: '#f39c12', fontWeight: 'bold' }}>
+                  ⏳ Waiting for more votes
+                </p>
+                <p style={{ fontSize: '0.9em', color: '#666' }}>
+                  Quorum not reached yet. Cast more votes and finalize again.
+                  Total votes so far: {proposal.tally_result.total_votes}
+                </p>
               </div>
             )}
 

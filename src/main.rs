@@ -52,10 +52,8 @@ struct VoteData {
     user: String,
 
     /// ECIES encrypted vote (hex-encoded)
+    /// ECIES includes ephemeral key + nonce inside ciphertext
     encrypted_vote: String,
-
-    /// Random nonce for encryption (hex-encoded, 16 bytes)
-    nonce: String,
 
     /// Block timestamp when vote was cast
     timestamp: u64,

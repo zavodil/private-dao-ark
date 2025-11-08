@@ -17,6 +17,25 @@ use crate::VoteData;
 use serde::Serialize;
 use std::collections::HashMap;
 
+/// Merkle proof for a single vote
+#[derive(Serialize, Debug, Clone)]
+pub struct MerkleProof {
+    /// Voter's account ID
+    pub voter: String,
+
+    /// Index of this vote in the votes array
+    pub vote_index: usize,
+
+    /// Hash of the encrypted vote (leaf node)
+    pub vote_hash: String,
+
+    /// Merkle proof path (sibling hashes from leaf to root)
+    pub proof_path: Vec<String>,
+
+    /// Vote timestamp
+    pub timestamp: u64,
+}
+
 /// Result of vote tallying
 #[derive(Serialize, Debug)]
 pub struct TallyResult {
@@ -40,6 +59,9 @@ pub struct TallyResult {
 
     /// Merkle root of all encrypted votes (for verification)
     pub votes_merkle_root: String,
+
+    /// Merkle proofs for each vote (allows voters to verify inclusion)
+    pub merkle_proofs: Vec<MerkleProof>,
 }
 
 /// Tally all votes for a proposal
@@ -178,10 +200,8 @@ pub fn tally_votes(
     // Check quorum
     let quorum_met = check_quorum(quorum, total_votes, yes_count, total_members)?;
 
-    // Compute merkle root of votes (for verification)
-    // In production: actual Merkle tree
-    // For MVP: simple hash of all vote data
-    let votes_merkle_root = compute_votes_hash(votes_data);
+    // Build merkle tree and generate proofs for all votes
+    let (votes_merkle_root, merkle_proofs) = build_merkle_tree_with_proofs(votes_data);
 
     // Generate TEE attestation
     // In MVP: placeholder
@@ -204,7 +224,119 @@ pub fn tally_votes(
         total_votes,
         tee_attestation,
         votes_merkle_root,
+        merkle_proofs,
     })
+}
+
+/// Build Merkle tree and generate proofs for all votes
+///
+/// Constructs a binary Merkle tree from vote hashes and generates
+/// inclusion proofs for each vote.
+///
+/// # Algorithm
+/// 1. Hash each vote: SHA256(user || timestamp || encrypted_vote)
+/// 2. Build binary tree bottom-up (pad with duplicates if odd count)
+/// 3. Generate proof path for each leaf (sibling hashes to root)
+///
+/// # Returns
+/// - `merkle_root`: Root hash (hex string)
+/// - `proofs`: Vec of MerkleProof (one per vote)
+///
+/// # Example Tree (4 votes)
+/// ```
+///       root
+///      /    \
+///    h01    h23
+///   /  \   /  \
+///  h0  h1 h2  h3
+/// ```
+/// Proof for h0: [h1, h23]
+/// Proof for h2: [h3, h01]
+fn build_merkle_tree_with_proofs(votes_data: &[VoteData]) -> (String, Vec<MerkleProof>) {
+    use sha2::{Digest, Sha256};
+
+    if votes_data.is_empty() {
+        return (String::new(), Vec::new());
+    }
+
+    // Step 1: Create leaf hashes (one per vote)
+    let mut leaf_hashes: Vec<String> = Vec::new();
+    let mut proofs: Vec<MerkleProof> = Vec::new();
+
+    for (index, vote) in votes_data.iter().enumerate() {
+        let mut hasher = Sha256::new();
+        hasher.update(vote.user.as_bytes());
+        hasher.update(&vote.timestamp.to_le_bytes());
+        hasher.update(vote.encrypted_vote.as_bytes());
+        let hash = hex::encode(hasher.finalize());
+        leaf_hashes.push(hash.clone());
+
+        // Initialize proof structure
+        proofs.push(MerkleProof {
+            voter: vote.user.clone(),
+            vote_index: index,
+            vote_hash: hash,
+            proof_path: Vec::new(), // Will fill later
+            timestamp: vote.timestamp,
+        });
+    }
+
+    // Step 2: Build tree levels bottom-up
+    let mut current_level = leaf_hashes.clone();
+    let mut all_levels: Vec<Vec<String>> = vec![current_level.clone()];
+
+    while current_level.len() > 1 {
+        let mut next_level: Vec<String> = Vec::new();
+
+        for i in (0..current_level.len()).step_by(2) {
+            let left = &current_level[i];
+            let right = if i + 1 < current_level.len() {
+                &current_level[i + 1]
+            } else {
+                left // Duplicate if odd
+            };
+
+            let mut hasher = Sha256::new();
+            hasher.update(left.as_bytes());
+            hasher.update(right.as_bytes());
+            let parent = hex::encode(hasher.finalize());
+            next_level.push(parent);
+        }
+
+        all_levels.push(next_level.clone());
+        current_level = next_level;
+    }
+
+    let merkle_root = current_level[0].clone();
+
+    // Step 3: Generate proof paths for each leaf
+    for (leaf_index, proof) in proofs.iter_mut().enumerate() {
+        let mut path: Vec<String> = Vec::new();
+        let mut current_index = leaf_index;
+
+        for level in 0..(all_levels.len() - 1) {
+            let level_data = &all_levels[level];
+            let sibling_index = if current_index % 2 == 0 {
+                current_index + 1
+            } else {
+                current_index - 1
+            };
+
+            // Get sibling hash
+            let sibling = if sibling_index < level_data.len() {
+                level_data[sibling_index].clone()
+            } else {
+                level_data[current_index].clone() // Duplicate if no sibling
+            };
+
+            path.push(sibling);
+            current_index /= 2; // Move to parent index
+        }
+
+        proof.proof_path = path;
+    }
+
+    (merkle_root, proofs)
 }
 
 /// Check if quorum requirements are met
@@ -277,11 +409,12 @@ fn check_quorum(
 ///
 /// # Implementation
 /// - Sort votes by (user, timestamp) for deterministic ordering
-/// - Hash each vote: SHA256(user || nonce || encrypted_vote)
+/// - Hash each vote: SHA256(user || timestamp || encrypted_vote)
 /// - Compute root: SHA256(hash1 || hash2 || ... || hashN)
 ///
 /// # Returns
 /// - Hex-encoded SHA256 hash (64 characters)
+#[allow(dead_code)]
 fn compute_votes_hash(votes_data: &[VoteData]) -> String {
     use sha2::{Digest, Sha256};
 
@@ -295,7 +428,6 @@ fn compute_votes_hash(votes_data: &[VoteData]) -> String {
         // Hash each vote component
         hasher.update(vote.user.as_bytes());
         hasher.update(&vote.timestamp.to_le_bytes());
-        hasher.update(vote.nonce.as_bytes());
         hasher.update(vote.encrypted_vote.as_bytes());
     }
 
@@ -354,11 +486,10 @@ fn generate_tee_attestation(
 mod tests {
     use super::*;
 
-    fn create_test_vote(user: &str, encrypted: &str, nonce: &str, ts: u64) -> VoteData {
+    fn create_test_vote(user: &str, encrypted: &str, ts: u64) -> VoteData {
         VoteData {
             user: user.to_string(),
             encrypted_vote: encrypted.to_string(),
-            nonce: nonce.to_string(),
             timestamp: ts,
         }
     }
@@ -366,8 +497,8 @@ mod tests {
     #[test]
     fn test_votes_hash_deterministic() {
         let votes = vec![
-            create_test_vote("alice", "abc", "123", 1000),
-            create_test_vote("bob", "def", "456", 2000),
+            create_test_vote("alice", "abc", 1000),
+            create_test_vote("bob", "def", 2000),
         ];
 
         let hash1 = compute_votes_hash(&votes);
@@ -379,13 +510,13 @@ mod tests {
     #[test]
     fn test_votes_hash_order_independent() {
         let votes1 = vec![
-            create_test_vote("alice", "abc", "123", 1000),
-            create_test_vote("bob", "def", "456", 2000),
+            create_test_vote("alice", "abc", 1000),
+            create_test_vote("bob", "def", 2000),
         ];
 
         let votes2 = vec![
-            create_test_vote("bob", "def", "456", 2000),
-            create_test_vote("alice", "abc", "123", 1000),
+            create_test_vote("bob", "def", 2000),
+            create_test_vote("alice", "abc", 1000),
         ];
 
         let hash1 = compute_votes_hash(&votes1);

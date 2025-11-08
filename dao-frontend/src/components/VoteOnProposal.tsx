@@ -59,7 +59,7 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
     // Compatible with Rust backend (ecies crate)
     //
     // pubkey format: 33-byte hex string (compressed secp256k1 public key)
-    // Returns: hex-encoded ciphertext (nonce included inside)
+    // Returns: hex-encoded ciphertext (ephemeral key + nonce included inside)
 
     try {
       // Encode vote text to bytes
@@ -104,7 +104,6 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
         {
           proposal_id: selectedProposal,
           encrypted_vote: encrypted,
-          nonce: '', // Empty string (ECIES includes nonce in ciphertext)
         },
         BigInt('200000000000000'), // 200 TGas
         BigInt('2000000000000000000000') // 0.002 NEAR
