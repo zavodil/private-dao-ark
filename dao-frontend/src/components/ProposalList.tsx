@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { WalletSelector } from '@near-wallet-selector/core';
 import { actionCreators } from '@near-js/transactions';
 import { Proposal } from '../types';
+import { VoteProofs } from './VoteProofs';
 
 interface ProposalListProps {
   selector: WalletSelector | null;
@@ -152,7 +153,8 @@ export const ProposalList: React.FC<ProposalListProps> = ({
                 <strong>Created by:</strong> {proposal.creator}
               </div>
               <div>
-                <strong>Deadline:</strong> {formatDate(proposal.deadline)}
+                <strong>Deadline:</strong>{' '}
+                {proposal.deadline ? formatDate(proposal.deadline) : 'No deadline'}
               </div>
               <div>
                 <strong>Proposal ID:</strong> #{proposal.id}
@@ -167,8 +169,8 @@ export const ProposalList: React.FC<ProposalListProps> = ({
               </div>
             </div>
 
-            {/* Show finalize button for Active proposals that haven't been tallied yet */}
-            {proposal.status === 'Active' && !proposal.tally_result && (
+            {/* Show finalize button for all Active proposals */}
+            {proposal.status === 'Active' && (
               <div className="finalize-section" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
                 <button
                   onClick={(e) => {
@@ -186,19 +188,12 @@ export const ProposalList: React.FC<ProposalListProps> = ({
                     Waiting for at least one vote...
                   </p>
                 )}
-              </div>
-            )}
-
-            {/* Show info if Active but already tallied (quorum not met yet) */}
-            {proposal.status === 'Active' && proposal.tally_result && !proposal.tally_result.quorum_met && (
-              <div className="quorum-pending" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
-                <p style={{ color: '#f39c12', fontWeight: 'bold' }}>
-                  ⏳ Waiting for more votes
-                </p>
-                <p style={{ fontSize: '0.9em', color: '#666' }}>
-                  Quorum not reached yet. Cast more votes and finalize again.
-                  Total votes so far: {proposal.tally_result.total_votes}
-                </p>
+                {/* Show status message if already tallied but quorum not met */}
+                {proposal.tally_result && !proposal.tally_result.quorum_met && (
+                  <p style={{ fontSize: '0.9em', color: '#f39c12', marginTop: '5px' }}>
+                    ⏳ Quorum not met yet. Add more votes and finalize again.
+                  </p>
+                )}
               </div>
             )}
 
@@ -224,6 +219,14 @@ export const ProposalList: React.FC<ProposalListProps> = ({
                       <summary>📊 Merkle Root</summary>
                       <code>{proposal.tally_result.votes_merkle_root}</code>
                     </details>
+
+                    {/* Show vote proofs for user */}
+                    <VoteProofs
+                      proposalId={proposal.id}
+                      accountId={accountId}
+                      viewMethod={viewMethod}
+                      merkleRoot={proposal.tally_result.votes_merkle_root}
+                    />
                   </>
                 ) : (
                   <div className="quorum-not-met">
@@ -231,8 +234,7 @@ export const ProposalList: React.FC<ProposalListProps> = ({
                       ❌ Quorum not met
                     </p>
                     <p style={{ fontSize: '0.9em', color: '#666' }}>
-                      Vote counts are hidden to protect voter privacy.
-                      Total votes cast: {proposal.tally_result.total_votes}
+                      Vote counts are hidden to protect voter privacy until quorum is reached.
                     </p>
                   </div>
                 )}

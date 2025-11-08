@@ -19,6 +19,7 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
   const [description, setDescription] = useState('');
   const [quorumType, setQuorumType] = useState<'absolute' | 'percentage' | 'percentageOfVoters'>('absolute');
   const [quorumValue, setQuorumValue] = useState('3');
+  const [hasDeadline, setHasDeadline] = useState(false);
   const [deadline, setDeadline] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -33,9 +34,12 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
     try {
       const wallet = await selector.wallet();
 
-      // Calculate deadline timestamp (nanoseconds)
-      const deadlineDate = new Date(deadline);
-      const deadlineNs = deadlineDate.getTime() * 1_000_000; // Convert ms to ns
+      // Calculate deadline timestamp (nanoseconds) or null
+      let deadlineNs: number | null = null;
+      if (hasDeadline && deadline) {
+        const deadlineDate = new Date(deadline);
+        deadlineNs = deadlineDate.getTime() * 1_000_000; // Convert ms to ns
+      }
 
       // Build quorum object
       let quorum: any;
@@ -53,7 +57,7 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
           title,
           description,
           quorum,
-          deadline: deadlineNs, // u64 number, not string
+          deadline: deadlineNs, // null or u64 number
         },
         BigInt('200000000000000'), // 200 TGas
         BigInt('1000000000000000000000') // 0.001 NEAR
@@ -125,14 +129,38 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
         </div>
 
         <div className="form-group">
-          <label>Deadline:</label>
-          <input
-            type="datetime-local"
-            value={deadline}
-            onChange={(e) => setDeadline(e.target.value)}
-            required
-          />
+          <label>
+            <input
+              type="checkbox"
+              checked={hasDeadline}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setHasDeadline(checked);
+                if (checked && !deadline) {
+                  // Set default deadline to +1 week from now
+                  const oneWeekLater = new Date();
+                  oneWeekLater.setDate(oneWeekLater.getDate() + 7);
+                  // Format for datetime-local input (YYYY-MM-DDThh:mm)
+                  const formatted = oneWeekLater.toISOString().slice(0, 16);
+                  setDeadline(formatted);
+                }
+              }}
+            />
+            Set Deadline (optional)
+          </label>
         </div>
+
+        {hasDeadline && (
+          <div className="form-group">
+            <label>Deadline:</label>
+            <input
+              type="datetime-local"
+              value={deadline}
+              onChange={(e) => setDeadline(e.target.value)}
+              required
+            />
+          </div>
+        )}
 
         <button type="submit" disabled={loading} className="btn-primary">
           {loading ? 'Creating...' : 'Create Proposal (0.001 NEAR)'}

@@ -11,7 +11,7 @@ export interface Proposal {
   description: string;
   creator: string;
   created_at: number;
-  deadline: number;
+  deadline: number | null; // Optional deadline
   quorum: QuorumType;
   status: 'Active' | 'Passed' | 'Rejected';
   total_members_at_creation: number;

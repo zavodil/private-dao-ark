@@ -48,7 +48,8 @@ pub struct Proposal {
     #[schemars(with = "String")]
     pub creator: AccountId,
     pub created_at: u64,
-    pub deadline: u64,
+    /// Optional deadline (nanoseconds since epoch). If None, proposal has no time limit.
+    pub deadline: Option<u64>,
     pub quorum: QuorumType,
     pub status: ProposalStatus,
     pub total_members_at_creation: u64,

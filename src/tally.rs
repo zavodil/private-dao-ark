@@ -216,12 +216,13 @@ pub fn tally_votes(
         no_count,
     );
 
-    // Privacy protection: only include yes/no counts if quorum met
+    // Privacy protection: only include counts if quorum met
+    // If quorum not met, hide all vote counts to protect voter privacy
     Ok(TallyResult {
         proposal_id,
         yes_count: if quorum_met { Some(yes_count) } else { None },
         no_count: if quorum_met { Some(no_count) } else { None },
-        total_votes,
+        total_votes: if quorum_met { total_votes } else { 0 }, // Hide total if no quorum
         tee_attestation,
         votes_merkle_root,
         merkle_proofs,

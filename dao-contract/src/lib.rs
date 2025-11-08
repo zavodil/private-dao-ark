@@ -15,7 +15,7 @@ mod types;
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::collections::{LookupMap, UnorderedMap, Vector};
 use near_sdk::{
-    env, ext_contract, log, near_bindgen, AccountId, Gas, NearToken, Promise,
+    env, ext_contract, log, near_bindgen, AccountId, Gas, NearToken, Promise, BorshStorageKey,
     PromiseError, PanicOnDefault,
 };
 
@@ -103,6 +103,15 @@ pub struct PrivateDAO {
     pub votes: LookupMap<u64, Vector<Vote>>,
 }
 
+#[derive(BorshSerialize, BorshStorageKey)]
+#[borsh(crate = "near_sdk::borsh")]
+enum StorageKey {
+    Members,
+    UserPubKeys,
+    Proposals,
+    Votes
+}
+
 #[near_bindgen]
 impl PrivateDAO {
     /// Initialize a new DAO
@@ -119,12 +128,12 @@ impl PrivateDAO {
             owner: owner.clone(),
             name,
             membership_mode,
-            members: LookupMap::new(b"m"),
+            members: LookupMap::new(StorageKey::Members),
             member_count: 0,
-            user_pubkeys: LookupMap::new(b"p"),
-            proposals: UnorderedMap::new(b"r"),
+            user_pubkeys: LookupMap::new(StorageKey::UserPubKeys),
+            proposals: UnorderedMap::new(StorageKey::Proposals),
             next_proposal_id: 1,
-            votes: LookupMap::new(b"v"),
+            votes: LookupMap::new(StorageKey::Votes),
         };
 
         // Add owner as first member
@@ -239,9 +248,10 @@ impl PrivateDAO {
     ///
     /// WARNING: This will clear all proposals and votes!
     /// Members and pubkeys are preserved.
-    #[private]
+    ///
+    /// NOTE: Must be called by contract account itself (use near-cli with --accountId same as contract)
     #[init(ignore_state)]
-    pub fn migrate_state() -> Self {
+    pub fn reset_state() -> Self {
         // Get old state
         let old_state: PrivateDAO = env::state_read().expect("Failed to read state");
 
@@ -252,17 +262,17 @@ impl PrivateDAO {
             "Only owner can migrate"
         );
 
-        // Create new state with fresh collections
+        // Create new state - keep members/pubkeys as-is, recreate proposals/votes
         let new_state = Self {
             owner: old_state.owner.clone(),
             name: old_state.name.clone(),
             membership_mode: old_state.membership_mode.clone(),
-            members: old_state.members, // Keep members
-            member_count: old_state.member_count,
-            user_pubkeys: old_state.user_pubkeys, // Keep pubkeys
-            proposals: UnorderedMap::new(b"P"), // New prefix to avoid conflicts
+            members: LookupMap::new(StorageKey::Members),
+            member_count: 0,
+            user_pubkeys: LookupMap::new(StorageKey::UserPubKeys),
+            proposals: UnorderedMap::new(StorageKey::Proposals),
             next_proposal_id: 1,
-            votes: LookupMap::new(b"V"), // New prefix
+            votes: LookupMap::new(StorageKey::Votes),
         };
 
         log!(
@@ -310,7 +320,7 @@ impl PrivateDAO {
     /// * `title` - Proposal title
     /// * `description` - Proposal description
     /// * `quorum` - Quorum requirements for passing
-    /// * `deadline` - Voting deadline (nanoseconds since epoch)
+    /// * `deadline` - Optional voting deadline (nanoseconds since epoch). If None, no time limit.
     ///
     /// # Payment
     /// Requires 0.001 NEAR for storage
@@ -320,7 +330,7 @@ impl PrivateDAO {
         title: String,
         description: String,
         quorum: QuorumType,
-        deadline: u64,
+        deadline: Option<u64>,
     ) -> u64 {
         let creator = env::predecessor_account_id();
 
@@ -337,11 +347,13 @@ impl PrivateDAO {
             "Minimum deposit is 0.001 NEAR for storage"
         );
 
-        // Validate deadline is in the future
-        assert!(
-            deadline > env::block_timestamp(),
-            "Deadline must be in the future"
-        );
+        // Validate deadline is in the future (if provided)
+        if let Some(deadline_ns) = deadline {
+            assert!(
+                deadline_ns > env::block_timestamp(),
+                "Deadline must be in the future"
+            );
+        }
 
         let proposal_id = self.next_proposal_id;
         self.next_proposal_id += 1;
@@ -360,7 +372,10 @@ impl PrivateDAO {
         };
 
         self.proposals.insert(&proposal_id, &proposal);
-        self.votes.insert(&proposal_id, &Vector::new(format!("v{}", proposal_id).as_bytes()));
+
+        // Create unique storage key for this proposal's votes
+        let votes_key = format!("v{}", proposal_id);
+        self.votes.insert(&proposal_id, &Vector::new(votes_key.as_bytes()));
 
         log!(
             "Proposal {} created by {}: '{}'",
@@ -424,11 +439,13 @@ impl PrivateDAO {
             "Proposal is not active"
         );
 
-        // Check deadline not passed
-        assert!(
-            env::block_timestamp() < proposal.deadline,
-            "Voting deadline has passed"
-        );
+        // Check deadline not passed (if deadline is set)
+        if let Some(deadline_ns) = proposal.deadline {
+            assert!(
+                env::block_timestamp() < deadline_ns,
+                "Voting deadline has passed"
+            );
+        }
 
         // Create vote
         let vote = Vote {
@@ -737,14 +754,18 @@ impl PrivateDAO {
                     );
 
                     // Quorum not met - check if deadline passed
-                    let deadline_passed = env::block_timestamp() >= proposal.deadline;
+                    let deadline_passed = if let Some(deadline_ns) = proposal.deadline {
+                        env::block_timestamp() >= deadline_ns
+                    } else {
+                        false // No deadline = never passed
+                    };
 
                     if deadline_passed {
                         // Deadline passed + no quorum = Rejected
                         proposal.status = ProposalStatus::Rejected;
                         log!("Proposal {} rejected: deadline passed without reaching quorum", proposal_id);
                     } else {
-                        // Deadline not passed - keep Active to allow more votes
+                        // Deadline not passed or no deadline - keep Active to allow more votes
                         log!("Proposal {} remains active: quorum not met but deadline not passed", proposal_id);
                     }
 
@@ -845,13 +866,11 @@ impl PrivateDAO {
 
     /// Get merkle proofs for user's votes in a proposal
     ///
-    /// Returns proofs for all votes cast by the caller in the specified proposal.
-    /// Use this to verify that your votes were included in the tally.
+    /// Returns proofs for all votes cast by the specified account in the proposal.
+    /// Use this to verify that votes were included in the tally.
     ///
     /// Returns empty Vec if proposal not finalized or user has no votes.
-    pub fn get_my_vote_proofs(&self, proposal_id: u64) -> Vec<MerkleProof> {
-        let caller = env::predecessor_account_id();
-
+    pub fn get_vote_proofs(&self, proposal_id: u64, account_id: AccountId) -> Vec<MerkleProof> {
         // Get proposal
         let proposal = match self.proposals.get(&proposal_id) {
             Some(p) => p,
@@ -867,7 +886,7 @@ impl PrivateDAO {
         // Filter proofs for this user
         tally_result.merkle_proofs
             .into_iter()
-            .filter(|proof| proof.voter == caller.as_str())
+            .filter(|proof| proof.voter == account_id.as_str())
             .collect()
     }
 }

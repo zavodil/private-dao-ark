@@ -27,6 +27,8 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userPubkey, setUserPubkey] = useState<string | null>(null);
+  const [voteHash, setVoteHash] = useState<string | null>(null);
+  const [showVoteHash, setShowVoteHash] = useState(false);
 
   useEffect(() => {
     fetchActiveProposals();
@@ -80,11 +82,22 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
     }
   };
 
+  const computeVoteHash = async (user: string, timestamp: number, encryptedVote: string): Promise<string> => {
+    // Compute vote hash: SHA256(user + timestamp + encrypted_vote)
+    // This matches exactly how the worker computes it in build_merkle_tree_with_proofs()
+    const message = user + timestamp.toString() + encryptedVote;
+    const msgBuffer = new TextEncoder().encode(message);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
   const handleVote = async () => {
     if (!selector || !selectedProposal || !vote || !userPubkey) return;
 
     setLoading(true);
     setError(null);
+    setShowVoteHash(false);
 
     try {
       // For dummy vote, generate random noise (NOT "yes" or "no")
@@ -96,6 +109,21 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
 
       // Encrypt vote with ECIES
       const encrypted = encryptVote(voteToEncrypt, userPubkey);
+
+      // Compute vote hash BEFORE sending (for verification later)
+      const timestamp = Date.now() * 1_000_000; // Convert to nanoseconds
+      const computedHash = await computeVoteHash(accountId, timestamp, encrypted);
+
+      // Save vote info locally for later verification
+      const voteInfo = {
+        proposal_id: selectedProposal,
+        vote: vote, // "yes", "no", or "dummy"
+        encrypted_vote: encrypted,
+        vote_hash: computedHash,
+        timestamp: timestamp,
+        saved_at: new Date().toISOString()
+      };
+      localStorage.setItem(`vote_${selectedProposal}_${accountId}`, JSON.stringify(voteInfo));
 
       const wallet = await selector.wallet();
 
@@ -113,6 +141,10 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
         receiverId: contractId,
         actions: [action],
       });
+
+      // Show vote hash to user
+      setVoteHash(computedHash);
+      setShowVoteHash(true);
 
       setTimeout(() => {
         setVote('');
@@ -166,7 +198,7 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
             const proposal = proposals.find((p) => p.id === selectedProposal);
             if (!proposal) return null;
 
-            const isPastDeadline = Date.now() * 1_000_000 > proposal.deadline;
+            const isPastDeadline = proposal.deadline ? Date.now() * 1_000_000 > proposal.deadline : false;
 
             return (
               <>
@@ -174,11 +206,13 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
                 <p>{proposal.description}</p>
                 <p>
                   <strong>Deadline:</strong>{' '}
-                  {new Date(proposal.deadline / 1_000_000).toLocaleString()}
+                  {proposal.deadline
+                    ? new Date(proposal.deadline / 1_000_000).toLocaleString()
+                    : 'No deadline'}
                   {isPastDeadline && <span className="expired"> (EXPIRED - No new votes allowed)</span>}
                 </p>
 
-                {/* Voting form - only if deadline not passed */}
+                {/* Voting form - only if deadline not passed or no deadline */}
                 {!isPastDeadline && (
                   <div className="vote-form">
                     <div className="vote-buttons">
@@ -229,6 +263,77 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
       )}
 
       {error && <div className="error-message">{error}</div>}
+
+      {showVoteHash && voteHash && (
+        <div style={{
+          marginTop: '20px',
+          padding: '20px',
+          backgroundColor: '#e8f5e9',
+          border: '2px solid #4caf50',
+          borderRadius: '8px'
+        }}>
+          <h3 style={{ color: '#2e7d32', marginTop: 0 }}>✅ Vote Cast Successfully!</h3>
+
+          <div style={{ marginTop: '15px' }}>
+            <strong style={{ fontSize: '1.1em' }}>Your Vote Hash (save this!):</strong>
+            <div style={{
+              marginTop: '10px',
+              padding: '12px',
+              backgroundColor: 'white',
+              border: '1px solid #ddd',
+              borderRadius: '4px',
+              fontFamily: 'monospace',
+              fontSize: '0.9em',
+              wordBreak: 'break-all',
+              color: '#333'
+            }}>
+              {voteHash}
+            </div>
+
+            <div style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(voteHash);
+                  alert('Vote hash copied to clipboard!');
+                }}
+                className="btn-secondary"
+                style={{ flex: 1 }}
+              >
+                📋 Copy Hash
+              </button>
+              <button
+                onClick={() => {
+                  const blob = new Blob([voteHash], { type: 'text/plain' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `vote_hash_proposal_${selectedProposal}.txt`;
+                  a.click();
+                }}
+                className="btn-secondary"
+                style={{ flex: 1 }}
+              >
+                💾 Download
+              </button>
+            </div>
+          </div>
+
+          <div style={{
+            marginTop: '15px',
+            padding: '12px',
+            backgroundColor: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '4px',
+            fontSize: '0.9em'
+          }}>
+            <strong>⚠️ Important:</strong> Save this hash! After the proposal is finalized,
+            you'll see this exact hash in your merkle proofs, proving your vote was included.
+            The hash is computed from: SHA256(your_account + timestamp + encrypted_vote).
+            <br/><br/>
+            The hash is also saved in your browser's local storage for verification later.
+          </div>
+        </div>
+      )}
 
       <div className="info-box">
         <h3>🔐 Privacy Notice</h3>
