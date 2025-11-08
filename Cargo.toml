@@ -1,0 +1,43 @@
+[package]
+name = "private-dao-ark"
+version = "0.1.0"
+edition = "2021"
+
+# WASI binary (not library) - required for WASI compatibility
+[[bin]]
+name = "private-dao-ark"
+path = "src/main.rs"
+
+[dependencies]
+# Core serialization (use exact versions from other examples)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Cryptographic primitives
+# Note: These versions are tested with wasm32-wasip1/wasip2
+sha2 = "0.10"           # SHA-256 hashing
+hkdf = "0.12"           # HKDF key derivation
+hex = "0.4"             # Hex encoding/decoding
+base64 = "0.21"         # Base64 encoding (use older version for simpler API)
+
+# Elliptic curve cryptography (k256 - pure Rust, WASI-compatible)
+# Note: k256 is pure Rust implementation, works with WASI
+k256 = { version = "0.13", features = ["ecdh", "arithmetic"] }
+
+# AES encryption
+aes-gcm = "0.10"        # AES-256-GCM authenticated encryption
+
+# ECIES (Elliptic Curve Integrated Encryption Scheme)
+# Using pure Rust backend for WASI compatibility
+ecies = { version = "0.2", default-features = false, features = ["pure"] }
+libsecp256k1 = "0.7"  # Required by ecies for key generation
+
+# For ECIES implementation
+hmac = "0.12"           # HMAC for authentication
+
+[profile.release]
+# Optimize for size (WASM binary should be compact)
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
