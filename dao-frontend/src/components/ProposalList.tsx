@@ -41,7 +41,17 @@ export const ProposalList: React.FC<ProposalListProps> = ({
         return;
       }
 
-      setProposals(proposalsList as Proposal[]);
+      // Sort proposals: Active first, then by creation date (newest first)
+      const sorted = (proposalsList as Proposal[]).sort((a, b) => {
+        // Active proposals first
+        if (a.status === 'Active' && b.status !== 'Active') return -1;
+        if (a.status !== 'Active' && b.status === 'Active') return 1;
+
+        // Within same status, newer first
+        return b.created_at - a.created_at;
+      });
+
+      setProposals(sorted);
 
       // Fetch vote counts for each proposal
       const counts: Record<number, number> = {};

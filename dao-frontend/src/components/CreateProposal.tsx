@@ -7,6 +7,7 @@ interface CreateProposalProps {
   accountId: string;
   contractId: string;
   onSuccess: () => void;
+  viewMethod: (method: string, args?: any) => Promise<any>;
 }
 
 export const CreateProposal: React.FC<CreateProposalProps> = ({
@@ -14,15 +15,40 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
   accountId,
   contractId,
   onSuccess,
+  viewMethod,
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [quorumType, setQuorumType] = useState<'absolute' | 'percentage' | 'percentageOfVoters'>('absolute');
-  const [quorumValue, setQuorumValue] = useState('3');
+  const [quorumType, setQuorumType] = useState<'absolute' | 'percentage'>('percentage');
+  const [quorumValue, setQuorumValue] = useState('50');
+  const [memberCount, setMemberCount] = useState<number>(0);
   const [hasDeadline, setHasDeadline] = useState(false);
   const [deadline, setDeadline] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch current member count
+  React.useEffect(() => {
+    const fetchMemberCount = async () => {
+      try {
+        const daoInfo = await viewMethod('get_dao_info');
+        setMemberCount(daoInfo.member_count || 0);
+      } catch (e) {
+        console.error('Failed to fetch member count:', e);
+      }
+    };
+    fetchMemberCount();
+  }, [viewMethod]);
+
+  // Calculate actual votes needed
+  const calculateMinVotes = (): number => {
+    if (quorumType === 'absolute') {
+      return parseInt(quorumValue) || 1;
+    } else {
+      const percentage = parseInt(quorumValue) || 0;
+      return Math.ceil((memberCount * percentage) / 100);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,15 +67,9 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
         deadlineNs = deadlineDate.getTime() * 1_000_000; // Convert ms to ns
       }
 
-      // Build quorum object
-      let quorum: any;
-      if (quorumType === 'absolute') {
-        quorum = { Absolute: { min_votes: parseInt(quorumValue) } };
-      } else if (quorumType === 'percentage') {
-        quorum = { Percentage: { min_percentage: parseInt(quorumValue) } };
-      } else {
-        quorum = { PercentageOfVoters: { min_yes_percentage: parseInt(quorumValue) } };
-      }
+      // Always save as Absolute (frontend calculates from percentage)
+      const minVotes = calculateMinVotes();
+      const quorum = { Absolute: { min_votes: minVotes } };
 
       const action = actionCreators.functionCall(
         'create_proposal',
@@ -108,9 +128,8 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
         <div className="form-group">
           <label>Quorum Type:</label>
           <select value={quorumType} onChange={(e) => setQuorumType(e.target.value as any)}>
-            <option value="absolute">Absolute (min votes)</option>
-            <option value="percentage">Percentage of members</option>
-            <option value="percentageOfVoters">Percentage of voters</option>
+            <option value="percentage">Percentage of current members</option>
+            <option value="absolute">Absolute votes</option>
           </select>
         </div>
 
@@ -126,6 +145,16 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
             min="1"
             max={quorumType === 'absolute' ? '1000' : '100'}
           />
+          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#e3f2fd', borderRadius: '4px', fontSize: '0.9em' }}>
+            <strong>Current DAO members:</strong> {memberCount}
+            <br />
+            <strong>Votes required to pass:</strong> {calculateMinVotes()}
+            {quorumType === 'percentage' && (
+              <span style={{ color: '#666', display: 'block', marginTop: '5px' }}>
+                ({quorumValue}% of {memberCount} members = {calculateMinVotes()} votes)
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="form-group">

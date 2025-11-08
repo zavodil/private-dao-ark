@@ -97,11 +97,13 @@ body {
 
 .btn-secondary {
   background: rgba(255, 255, 255, 0.2);
-  color: white;
+  color: #333;
+  border: 1px solid rgba(0, 0, 0, 0.1);
 }
 
 .btn-secondary:hover {
   background: rgba(255, 255, 255, 0.3);
+  color: #000;
 }
 
 .btn-primary:disabled, .btn-secondary:disabled {

@@ -83,8 +83,8 @@ pub struct PrivateDAO {
     /// Membership mode: Public or Private
     pub membership_mode: MembershipMode,
 
-    /// Members list (account_id → is_member)
-    pub members: LookupMap<AccountId, bool>,
+    /// Members list (account_id → MemberInfo with joined_at timestamp)
+    pub members: LookupMap<AccountId, MemberInfo>,
 
     /// Member count (for public display)
     pub member_count: u64,
@@ -137,7 +137,9 @@ impl PrivateDAO {
         };
 
         // Add owner as first member
-        dao.members.insert(&owner, &true);
+        dao.members.insert(&owner, &MemberInfo {
+            joined_at: env::block_timestamp(),
+        });
         dao.member_count = 1;
 
         dao
@@ -165,7 +167,7 @@ impl PrivateDAO {
         let attached = env::attached_deposit();
 
         // Check if already a member
-        if self.members.get(&user).unwrap_or(false) {
+        if self.members.get(&user).is_some() {
             env::panic_str("Already a member");
         }
 
@@ -206,10 +208,42 @@ impl PrivateDAO {
             env::panic_str("Already a member");
         }
 
-        self.members.insert(&account_id, &true);
+        self.members.insert(&account_id, &MemberInfo {
+            joined_at: env::block_timestamp(),
+        });
         self.member_count += 1;
 
         log!("Added {} to private DAO (pre-approved)", account_id);
+    }
+
+    /// Leave the DAO (self-removal)
+    ///
+    /// Any member can leave the DAO at any time.
+    ///
+    /// Removes:
+    /// - Member status
+    /// - Public key (if exists)
+    /// - Does NOT remove votes (preserves historical data)
+    ///
+    /// Note: No refund is provided (storage deposit is forfeited)
+    pub fn leave_dao(&mut self) {
+        let user = env::predecessor_account_id();
+
+        // Check if member exists
+        if self.members.get(&user).is_none() {
+            env::panic_str("Not a member");
+        }
+
+        // Remove from members
+        self.members.remove(&user);
+        self.member_count -= 1;
+
+        // Remove pubkey if exists
+        if self.user_pubkeys.get(&user).is_some() {
+            self.user_pubkeys.remove(&user);
+        }
+
+        log!("User {} left the DAO", user);
     }
 
     /// Remove member (owner-only)
@@ -225,7 +259,7 @@ impl PrivateDAO {
         self.assert_owner();
 
         // Check if member exists
-        if !self.members.get(&account_id).unwrap_or(false) {
+        if self.members.get(&account_id).is_none() {
             env::panic_str("Not a member");
         }
 
@@ -241,7 +275,32 @@ impl PrivateDAO {
         log!("TESTING: Owner removed {} from DAO", account_id);
     }
 
-    /// Migrate state to new format (owner-only)
+    /// Manually add member with timestamp (owner-only, for migration)
+    ///
+    /// This is a migration helper to add members with joined_at = 0 after deploying V2.
+    /// Use this to restore members who were in the old contract.
+    ///
+    /// joined_at = 0 means they can vote on all proposals (old and new)
+    pub fn migrate_add_member(&mut self, account_id: AccountId, pubkey: Option<String>) {
+        self.assert_owner();
+
+        // Add member with joined_at = 0 (can vote on everything)
+        self.members.insert(&account_id, &MemberInfo { joined_at: 0 });
+
+        // Add pubkey if provided
+        if let Some(pk) = pubkey {
+            self.user_pubkeys.insert(&account_id, &pk);
+        }
+
+        self.member_count += 1;
+
+        log!(
+            "Migration: Added member {} with joined_at=0 (can vote on all proposals)",
+            account_id
+        );
+    }
+
+    /// Reset state (TESTING ONLY - clears everything)
     ///
     /// **FOR TESTING ONLY**: Recreates all storage collections with new format.
     /// Use this after contract upgrade when state format changed.
@@ -292,7 +351,7 @@ impl PrivateDAO {
         let attached = env::attached_deposit();
 
         // Check if pre-approved
-        if !self.members.get(&user).unwrap_or(false) {
+        if self.members.get(&user).is_none() {
             env::panic_str("Not pre-approved. Contact DAO owner.");
         }
 
@@ -335,10 +394,8 @@ impl PrivateDAO {
         let creator = env::predecessor_account_id();
 
         // Only members can create proposals
-        assert!(
-            self.members.get(&creator).unwrap_or(false),
-            "Only members can create proposals"
-        );
+        let member_info = self.members.get(&creator)
+            .expect("Only members can create proposals");
 
         // Check storage deposit
         let attached = env::attached_deposit();
@@ -355,6 +412,13 @@ impl PrivateDAO {
             );
         }
 
+        // Validate creator joined before proposal creation (prevent retroactive voting)
+        // This ensures members can only vote on proposals created AFTER they joined
+        assert!(
+            member_info.joined_at <= env::block_timestamp(),
+            "Invalid member timestamp"
+        );
+
         let proposal_id = self.next_proposal_id;
         self.next_proposal_id += 1;
 
@@ -367,7 +431,6 @@ impl PrivateDAO {
             deadline,
             quorum,
             status: ProposalStatus::Active,
-            total_members_at_creation: self.member_count,
             tally_result: None,
         };
 
@@ -396,6 +459,10 @@ impl PrivateDAO {
     /// # Payment
     /// Requires 0.002 NEAR for storage
     ///
+    /// # Returns
+    /// Timestamp (nanoseconds) used for vote hash calculation.
+    /// Vote hash = SHA256(user + timestamp + encrypted_vote)
+    ///
     /// # Notes
     /// - Vote is encrypted client-side using ECIES (secp256k1 + AES-256-GCM)
     /// - ECIES includes random nonce inside ciphertext (no separate nonce needed)
@@ -406,15 +473,13 @@ impl PrivateDAO {
         &mut self,
         proposal_id: u64,
         encrypted_vote: String,
-    ) {
+    ) -> u64 {
         let voter = env::predecessor_account_id();
         let attached = env::attached_deposit();
 
         // Only members can vote
-        assert!(
-            self.members.get(&voter).unwrap_or(false),
-            "Only members can vote"
-        );
+        let member_info = self.members.get(&voter)
+            .expect("Only members can vote");
 
         // Check if user has pubkey (completed join)
         assert!(
@@ -433,6 +498,15 @@ impl PrivateDAO {
         let proposal = self.proposals.get(&proposal_id)
             .expect("Proposal not found");
 
+        // Check member joined BEFORE proposal was created (prevent retroactive voting)
+        // Note: joined_at = 0 means old member from migration (can vote on all proposals)
+        if member_info.joined_at > 0 {
+            assert!(
+                member_info.joined_at < proposal.created_at,
+                "Cannot vote on proposals created before you joined"
+            );
+        }
+
         // Check proposal is active
         assert!(
             proposal.status == ProposalStatus::Active,
@@ -447,11 +521,12 @@ impl PrivateDAO {
             );
         }
 
-        // Create vote
+        // Create vote with blockchain timestamp
+        let timestamp = env::block_timestamp();
         let vote = Vote {
             user: voter.clone(),
             encrypted_vote,
-            timestamp: env::block_timestamp(),
+            timestamp,
         };
 
         // Add vote to list
@@ -459,7 +534,11 @@ impl PrivateDAO {
         votes.push(&vote);
         self.votes.insert(&proposal_id, &votes);
 
-        log!("Vote cast by {} on proposal {}", voter, proposal_id);
+        log!("Vote cast by {} on proposal {} at timestamp {}", voter, proposal_id, timestamp);
+
+        // Return timestamp so frontend can compute vote hash immediately
+        // vote_hash = SHA256(user + timestamp + encrypted_vote)
+        timestamp
     }
 
     /// Finalize a proposal and tally votes in TEE
@@ -599,8 +678,7 @@ impl PrivateDAO {
             "dao_account": env::current_account_id(),
             "proposal_id": proposal_id,
             "votes": votes,
-            "quorum": proposal.quorum,
-            "total_members_at_creation": proposal.total_members_at_creation
+            "quorum": proposal.quorum
         });
 
         // Call OutLayer with secrets_ref (master secret from keymaster)
@@ -661,10 +739,12 @@ impl PrivateDAO {
 
                 // Add as member NOW (after successful key derivation)
                 // This ensures user is only added if they have a valid pubkey
-                if !self.members.get(&user).unwrap_or(false) {
-                    self.members.insert(&user, &true);
+                if self.members.get(&user).is_none() {
+                    self.members.insert(&user, &MemberInfo {
+                        joined_at: env::block_timestamp(),
+                    });
                     self.member_count += 1;
-                    log!("User {} added to DAO with encryption key", user);
+                    log!("User {} added to DAO with encryption key at {}", user, env::block_timestamp());
                 } else {
                     log!("User {} pubkey updated (was pre-approved in private DAO)", user);
                 }
@@ -826,7 +906,12 @@ impl PrivateDAO {
 
     /// Check if account is a member
     pub fn is_member(&self, account_id: AccountId) -> bool {
-        self.members.get(&account_id).unwrap_or(false)
+        self.members.get(&account_id).is_some()
+    }
+
+    /// Get member info (joined_at timestamp)
+    pub fn get_member_info(&self, account_id: AccountId) -> Option<MemberInfo> {
+        self.members.get(&account_id)
     }
 
     /// Get user's public key

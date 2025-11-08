@@ -41,8 +41,6 @@ struct Input {
     /// Quorum requirements (for tally_votes)
     quorum: Option<serde_json::Value>,
 
-    /// Total members at proposal creation (for tally_votes)
-    total_members_at_creation: Option<u64>,
 }
 
 // Single encrypted vote from contract storage
@@ -150,7 +148,6 @@ fn handle_tally_votes(
     let proposal_id = input.proposal_id.ok_or("Missing proposal_id")?;
     let votes_data = input.votes.as_ref().ok_or("Missing votes")?;
     let quorum = input.quorum.as_ref().ok_or("Missing quorum")?;
-    let total_members = input.total_members_at_creation.ok_or("Missing total_members_at_creation")?;
 
     // Tally votes: decrypt all, filter real votes, count yes/no, check quorum
     let result = tally::tally_votes(
@@ -159,7 +156,6 @@ fn handle_tally_votes(
         proposal_id,
         votes_data,
         quorum,
-        total_members,
     )?;
 
     // Return result as JSON

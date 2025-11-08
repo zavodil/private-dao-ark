@@ -247,6 +247,7 @@ function App() {
                 accountId={accountId}
                 contractId={contractId}
                 onSuccess={() => setActiveTab('proposals')}
+                viewMethod={viewMethod}
               />
             )}
 

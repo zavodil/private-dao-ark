@@ -14,14 +14,12 @@ export interface Proposal {
   deadline: number | null; // Optional deadline
   quorum: QuorumType;
   status: 'Active' | 'Passed' | 'Rejected';
-  total_members_at_creation: number;
   tally_result: TallyResult | null;
 }
 
 export type QuorumType =
   | { Absolute: { min_votes: number } }
-  | { Percentage: { min_percentage: number } }
-  | { PercentageOfVoters: { min_yes_percentage: number } };
+  | { Percentage: { min_percentage: number } };
 
 export interface MerkleProof {
   voter: string;

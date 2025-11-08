@@ -94,12 +94,60 @@ export const JoinDAO: React.FC<JoinDAOProps> = ({
     }
   };
 
+  const handleLeave = async () => {
+    if (!selector) return;
+
+    // Confirm before leaving
+    if (!window.confirm('Are you sure you want to leave the DAO? Your storage deposit will not be refunded.')) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const wallet = await selector.wallet();
+
+      const action = actionCreators.functionCall(
+        'leave_dao',
+        {},
+        BigInt('30000000000000'), // 30 TGas
+        BigInt('1') // 1 yoctoNEAR
+      );
+
+      await wallet.signAndSendTransaction({
+        receiverId: contractId,
+        actions: [action],
+      });
+
+      setTimeout(() => {
+        onSuccess();
+        setLoading(false);
+      }, 2000);
+    } catch (err: any) {
+      console.error('Failed to leave DAO:', err);
+      setError(err.message || 'Failed to leave DAO');
+      setLoading(false);
+    }
+  };
+
   if (isMember && hasPubkey) {
     return (
       <div className="join-dao-complete">
         <h2>✅ You're a Member!</h2>
         <p>You have successfully joined the DAO and your encryption key is ready.</p>
         <p>You can now create proposals and vote anonymously.</p>
+
+        <button
+          onClick={handleLeave}
+          disabled={loading}
+          className="btn-secondary"
+          style={{ marginTop: '20px', backgroundColor: '#f44336', color: 'white' }}
+        >
+          {loading ? 'Leaving...' : 'Leave DAO'}
+        </button>
+
+        {error && <div className="error-message" style={{ marginTop: '15px' }}>{error}</div>}
       </div>
     );
   }

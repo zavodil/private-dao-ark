@@ -19,12 +19,8 @@ pub enum MembershipMode {
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub enum QuorumType {
-    /// Minimum absolute number of votes
+    /// Minimum absolute number of votes required
     Absolute { min_votes: u64 },
-    /// Minimum percentage of total members
-    Percentage { min_percentage: u64 },
-    /// Minimum percentage of YES votes among voters
-    PercentageOfVoters { min_yes_percentage: u64 },
 }
 
 /// Proposal status
@@ -52,7 +48,6 @@ pub struct Proposal {
     pub deadline: Option<u64>,
     pub quorum: QuorumType,
     pub status: ProposalStatus,
-    pub total_members_at_creation: u64,
     pub tally_result: Option<TallyResult>,
 }
 
@@ -94,6 +89,15 @@ pub struct TallyResult {
     pub votes_merkle_root: String,
     /// Merkle proofs for vote verification
     pub merkle_proofs: Vec<MerkleProof>,
+}
+
+/// Member information
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, JsonSchema, Clone, Debug)]
+#[borsh(crate = "near_sdk::borsh")]
+#[serde(crate = "near_sdk::serde")]
+pub struct MemberInfo {
+    /// Timestamp when member joined (nanoseconds)
+    pub joined_at: u64,
 }
 
 /// DAO information

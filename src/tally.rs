@@ -118,7 +118,6 @@ pub fn tally_votes(
     proposal_id: u64,
     votes_data: &[VoteData],
     quorum: &serde_json::Value,
-    total_members: u64,
 ) -> Result<TallyResult, String> {
     // Map to track last vote per user
     // Key: user account ID
@@ -198,7 +197,7 @@ pub fn tally_votes(
     let total_votes = yes_count + no_count;
 
     // Check quorum
-    let quorum_met = check_quorum(quorum, total_votes, yes_count, total_members)?;
+    let quorum_met = check_quorum(quorum, total_votes)?;
 
     // Build merkle tree and generate proofs for all votes
     let (votes_merkle_root, merkle_proofs) = build_merkle_tree_with_proofs(votes_data);
@@ -345,9 +344,7 @@ fn build_merkle_tree_with_proofs(votes_data: &[VoteData]) -> (String, Vec<Merkle
 /// Parses the quorum JSON and evaluates the condition based on vote counts.
 ///
 /// # Quorum Types
-/// - Absolute { min_votes }: Requires at least N votes
-/// - Percentage { min_percentage }: Requires at least X% of total members
-/// - PercentageOfVoters { min_yes_percentage }: Requires at least X% YES among voters
+/// - Absolute { min_votes }: Requires at least N votes total
 ///
 /// # Privacy Rationale
 /// Checking quorum in TEE ensures that vote counts are only revealed if threshold met.
@@ -356,8 +353,6 @@ fn build_merkle_tree_with_proofs(votes_data: &[VoteData]) -> (String, Vec<Merkle
 /// # Arguments
 /// * `quorum` - JSON value with quorum config (from contract)
 /// * `total_votes` - Number of votes tallied (yes + no)
-/// * `yes_count` - Number of yes votes
-/// * `total_members` - Total DAO members at proposal creation
 ///
 /// # Returns
 /// * `Ok(true)` - Quorum met
@@ -366,8 +361,6 @@ fn build_merkle_tree_with_proofs(votes_data: &[VoteData]) -> (String, Vec<Merkle
 fn check_quorum(
     quorum: &serde_json::Value,
     total_votes: u32,
-    yes_count: u32,
-    total_members: u64,
 ) -> Result<bool, String> {
     use serde::Deserialize;
 
@@ -375,8 +368,6 @@ fn check_quorum(
     #[serde(rename_all = "PascalCase")]
     enum QuorumType {
         Absolute { min_votes: u64 },
-        Percentage { min_percentage: u64 },
-        PercentageOfVoters { min_yes_percentage: u64 },
     }
 
     let quorum_type: QuorumType = serde_json::from_value(quorum.clone())
@@ -385,18 +376,6 @@ fn check_quorum(
     let met = match quorum_type {
         QuorumType::Absolute { min_votes } => {
             total_votes as u64 >= min_votes
-        }
-        QuorumType::Percentage { min_percentage } => {
-            let required = (total_members * min_percentage) / 100;
-            total_votes as u64 >= required
-        }
-        QuorumType::PercentageOfVoters { min_yes_percentage } => {
-            if total_votes == 0 {
-                false
-            } else {
-                let yes_percentage = (yes_count as u64 * 100) / total_votes as u64;
-                yes_percentage >= min_yes_percentage
-            }
         }
     };
 

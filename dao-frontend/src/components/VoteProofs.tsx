@@ -19,6 +19,7 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [showProofs, setShowProofs] = useState(false);
   const [verificationResults, setVerificationResults] = useState<Record<number, boolean>>({});
+  const [editableHashes, setEditableHashes] = useState<Record<number, string>>({});
 
   const fetchProofs = async () => {
     setLoading(true);
@@ -32,12 +33,15 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
       setProofs(fetchedProofs);
       setShowProofs(true);
 
-      // Verify all proofs
+      // Verify all proofs and initialize editable hashes
       const results: Record<number, boolean> = {};
+      const hashes: Record<number, string> = {};
       for (const proof of fetchedProofs) {
-        results[proof.vote_index] = await verifyProof(proof);
+        results[proof.vote_index] = await verifyProof(proof.vote_hash, proof.proof_path);
+        hashes[proof.vote_index] = proof.vote_hash;
       }
       setVerificationResults(results);
+      setEditableHashes(hashes);
     } catch (err: any) {
       console.error('Failed to fetch proofs:', err);
       setError(err.message || 'Failed to fetch proofs');
@@ -53,13 +57,13 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  const verifyProof = async (proof: MerkleProof): Promise<boolean> => {
+  const verifyProof = async (voteHash: string, proofPath: string[]): Promise<boolean> => {
     try {
       // Start with the vote hash (leaf)
-      let currentHash = proof.vote_hash;
+      let currentHash = voteHash;
 
       // Traverse up the tree using sibling hashes
-      for (const sibling of proof.proof_path) {
+      for (const sibling of proofPath) {
         // Combine current hash with sibling (order doesn't matter for verification,
         // but in the actual tree it depends on left/right position)
         // For simplicity, we hash them in alphabetical order
@@ -74,6 +78,14 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
       console.error('Verification error:', err);
       return false;
     }
+  };
+
+  const handleVerifyCustomHash = async (voteIndex: number, proofPath: string[]) => {
+    const customHash = editableHashes[voteIndex];
+    if (!customHash) return;
+
+    const isValid = await verifyProof(customHash, proofPath);
+    setVerificationResults(prev => ({ ...prev, [voteIndex]: isValid }));
   };
 
   if (!showProofs) {
@@ -143,9 +155,39 @@ export const VoteProofs: React.FC<VoteProofsProps> = ({
                     <strong>Timestamp:</strong>{' '}
                     {new Date(proof.timestamp / 1_000_000).toLocaleString()}
                   </div>
-                  <div style={{ marginBottom: '5px' }}>
-                    <strong>Vote Hash:</strong>{' '}
-                    <code style={{ fontSize: '0.8em', wordBreak: 'break-all' }}>{proof.vote_hash}</code>
+                  <div style={{ marginBottom: '10px' }}>
+                    <strong>Vote Hash:</strong>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '5px', alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        value={editableHashes[proof.vote_index] || ''}
+                        onChange={(e) => setEditableHashes(prev => ({ ...prev, [proof.vote_index]: e.target.value }))}
+                        style={{
+                          flex: 1,
+                          padding: '6px 10px',
+                          fontFamily: 'monospace',
+                          fontSize: '0.75em',
+                          border: '1px solid #ddd',
+                          borderRadius: '4px',
+                          color: '#333'
+                        }}
+                        placeholder="Enter vote hash to verify"
+                      />
+                      <button
+                        onClick={() => handleVerifyCustomHash(proof.vote_index, proof.proof_path)}
+                        style={{
+                          padding: '6px 12px',
+                          fontSize: '0.8em',
+                          backgroundColor: '#2196f3',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Verify
+                      </button>
+                    </div>
                   </div>
                   <details style={{ marginTop: '8px' }}>
                     <summary style={{ cursor: 'pointer', color: '#3498db' }}>
