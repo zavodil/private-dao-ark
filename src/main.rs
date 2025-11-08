@@ -37,6 +37,12 @@ struct Input {
 
     /// Encrypted votes data (for tally_votes)
     votes: Option<Vec<VoteData>>,
+
+    /// Quorum requirements (for tally_votes)
+    quorum: Option<serde_json::Value>,
+
+    /// Total members at proposal creation (for tally_votes)
+    total_members_at_creation: Option<u64>,
 }
 
 // Single encrypted vote from contract storage
@@ -145,9 +151,18 @@ fn handle_tally_votes(
 ) -> Result<serde_json::Value, String> {
     let proposal_id = input.proposal_id.ok_or("Missing proposal_id")?;
     let votes_data = input.votes.as_ref().ok_or("Missing votes")?;
+    let quorum = input.quorum.as_ref().ok_or("Missing quorum")?;
+    let total_members = input.total_members_at_creation.ok_or("Missing total_members_at_creation")?;
 
-    // Tally votes: decrypt all, filter real votes, count yes/no
-    let result = tally::tally_votes(master_secret, &input.dao_account, proposal_id, votes_data)?;
+    // Tally votes: decrypt all, filter real votes, count yes/no, check quorum
+    let result = tally::tally_votes(
+        master_secret,
+        &input.dao_account,
+        proposal_id,
+        votes_data,
+        quorum,
+        total_members,
+    )?;
 
     // Return result as JSON
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)

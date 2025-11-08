@@ -24,8 +24,9 @@ export type QuorumType =
   | { PercentageOfVoters: { min_yes_percentage: number } };
 
 export interface TallyResult {
-  yes_count: number;
-  no_count: number;
+  quorum_met: boolean;
+  yes_count: number | null; // Only present if quorum met
+  no_count: number | null; // Only present if quorum met
   total_votes: number;
   tee_attestation: string;
   votes_merkle_root: string;

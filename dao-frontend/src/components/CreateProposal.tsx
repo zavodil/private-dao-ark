@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { WalletSelector } from '@near-wallet-selector/core';
+import { actionCreators } from '@near-js/transactions';
 
 interface CreateProposalProps {
   selector: WalletSelector | null;
@@ -46,24 +47,21 @@ export const CreateProposal: React.FC<CreateProposalProps> = ({
         quorum = { PercentageOfVoters: { min_yes_percentage: parseInt(quorumValue) } };
       }
 
-      await (wallet as any).signAndSendTransaction({
+      const action = actionCreators.functionCall(
+        'create_proposal',
+        {
+          title,
+          description,
+          quorum,
+          deadline: deadlineNs, // u64 number, not string
+        },
+        BigInt('200000000000000'), // 200 TGas
+        BigInt('1000000000000000000000') // 0.001 NEAR
+      );
+
+      await wallet.signAndSendTransaction({
         receiverId: contractId,
-        actions: [
-          {
-            type: 'FunctionCall',
-            params: {
-              methodName: 'create_proposal',
-              args: {
-                title,
-                description,
-                quorum,
-                deadline: deadlineNs.toString(),
-              },
-              gas: '50000000000000', // 50 TGas
-              deposit: '1000000000000000000000', // 0.001 NEAR
-            },
-          },
-        ],
+        actions: [action],
       });
 
       setTimeout(() => {

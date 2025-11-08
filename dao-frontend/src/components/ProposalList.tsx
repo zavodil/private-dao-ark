@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { WalletSelector } from '@near-wallet-selector/core';
+import { actionCreators } from '@near-js/transactions';
 import { Proposal } from '../types';
 
 interface ProposalListProps {
@@ -7,6 +8,7 @@ interface ProposalListProps {
   accountId: string;
   contractId: string;
   network: string;
+  viewMethod: (method: string, args?: any) => Promise<any>;
 }
 
 export const ProposalList: React.FC<ProposalListProps> = ({
@@ -14,38 +16,76 @@ export const ProposalList: React.FC<ProposalListProps> = ({
   accountId,
   contractId,
   network,
+  viewMethod,
 }) => {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProposal, setSelectedProposal] = useState<Proposal | null>(null);
+  const [finalizing, setFinalizing] = useState(false);
+  const [votesCounts, setVotesCounts] = useState<Record<number, number>>({});
 
   useEffect(() => {
     fetchProposals();
   }, [selector, contractId]);
 
   const fetchProposals = async () => {
-    if (!selector) return;
-
     try {
-      const { network: networkConfig } = selector.options;
-      const provider = new (await import('near-api-js')).providers.JsonRpcProvider({
-        url: networkConfig.nodeUrl,
-      });
+      const proposalsList = await viewMethod('get_proposals', { from_index: 0, limit: 50 });
+      setProposals(proposalsList as Proposal[]);
 
-      const result: any = await provider.query({
-        request_type: 'call_function',
-        account_id: contractId,
-        method_name: 'get_proposals',
-        args_base64: Buffer.from(JSON.stringify({ from_index: 0, limit: 50 })).toString('base64'),
-        finality: 'final',
-      });
+      // Fetch vote counts for each proposal
+      const counts: Record<number, number> = {};
+      for (const proposal of proposalsList as Proposal[]) {
+        try {
+          const votes = await viewMethod('get_votes', { proposal_id: proposal.id });
+          counts[proposal.id] = votes ? votes.length : 0;
+        } catch (e) {
+          counts[proposal.id] = 0;
+        }
+      }
+      setVotesCounts(counts);
 
-      const proposalsList = JSON.parse(Buffer.from(result.result).toString());
-      setProposals(proposalsList);
       setLoading(false);
     } catch (error) {
       console.error('Failed to fetch proposals:', error);
       setLoading(false);
+    }
+  };
+
+  const handleFinalize = async (proposal: Proposal) => {
+    if (!selector) return;
+
+    const voteCount = votesCounts[proposal.id] || 0;
+    if (voteCount === 0) {
+      alert('No votes to finalize yet. Wait for at least one vote.');
+      return;
+    }
+
+    try {
+      setFinalizing(true);
+
+      const wallet = await selector.wallet();
+      const action = actionCreators.functionCall(
+        'finalize_proposal',
+        { proposal_id: proposal.id },
+        BigInt('200000000000000'), // 200 TGas
+        BigInt('10000000000000000000000') // 0.01 NEAR
+      );
+
+      await wallet.signAndSendTransaction({
+        receiverId: contractId,
+        actions: [action],
+      });
+
+      // Wait a bit for transaction to complete
+      setTimeout(() => {
+        fetchProposals();
+        setFinalizing(false);
+      }, 2000);
+    } catch (error) {
+      console.error('Failed to finalize:', error);
+      alert(`Error: ${error}`);
+      setFinalizing(false);
     }
   };
 
@@ -108,28 +148,72 @@ export const ProposalList: React.FC<ProposalListProps> = ({
               <div>
                 <strong>Proposal ID:</strong> #{proposal.id}
               </div>
+              <div>
+                <strong>Votes Cast:</strong> {votesCounts[proposal.id] || 0}
+                {votesCounts[proposal.id] > 0 && (
+                  <span style={{ fontSize: '0.85em', color: '#666', marginLeft: '5px' }}>
+                    (may include dummy votes)
+                  </span>
+                )}
+              </div>
             </div>
+
+            {/* Show finalize button for Active proposals */}
+            {proposal.status === 'Active' && (
+              <div className="finalize-section" style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation(); // Prevent card selection
+                    handleFinalize(proposal);
+                  }}
+                  disabled={finalizing || (votesCounts[proposal.id] || 0) === 0}
+                  className="btn-primary"
+                  style={{ width: '100%' }}
+                >
+                  {finalizing ? 'Counting votes...' : '⚖️ Finalize & Count Votes (0.01 NEAR)'}
+                </button>
+                {(votesCounts[proposal.id] || 0) === 0 && (
+                  <p style={{ fontSize: '0.85em', color: '#666', marginTop: '5px' }}>
+                    Waiting for at least one vote...
+                  </p>
+                )}
+              </div>
+            )}
 
             {proposal.tally_result && (
               <div className="tally-result">
                 <h4>Results:</h4>
-                <div className="votes-display">
-                  <div className="vote-bar">
-                    <span className="vote-label">YES: {proposal.tally_result.yes_count}</span>
-                    <span className="vote-label">NO: {proposal.tally_result.no_count}</span>
+                {proposal.tally_result.quorum_met ? (
+                  <>
+                    <div className="votes-display">
+                      <div className="vote-bar">
+                        <span className="vote-label">YES: {proposal.tally_result.yes_count}</span>
+                        <span className="vote-label">NO: {proposal.tally_result.no_count}</span>
+                      </div>
+                      <div className="vote-total">
+                        Total: {proposal.tally_result.total_votes} votes
+                      </div>
+                    </div>
+                    <details className="attestation-details">
+                      <summary>🔐 TEE Attestation</summary>
+                      <code>{proposal.tally_result.tee_attestation}</code>
+                    </details>
+                    <details className="merkle-details">
+                      <summary>📊 Merkle Root</summary>
+                      <code>{proposal.tally_result.votes_merkle_root}</code>
+                    </details>
+                  </>
+                ) : (
+                  <div className="quorum-not-met">
+                    <p style={{ color: '#e74c3c', fontWeight: 'bold' }}>
+                      ❌ Quorum not met
+                    </p>
+                    <p style={{ fontSize: '0.9em', color: '#666' }}>
+                      Vote counts are hidden to protect voter privacy.
+                      Total votes cast: {proposal.tally_result.total_votes}
+                    </p>
                   </div>
-                  <div className="vote-total">
-                    Total: {proposal.tally_result.total_votes} votes
-                  </div>
-                </div>
-                <details className="attestation-details">
-                  <summary>🔐 TEE Attestation</summary>
-                  <code>{proposal.tally_result.tee_attestation}</code>
-                </details>
-                <details className="merkle-details">
-                  <summary>📊 Merkle Root</summary>
-                  <code>{proposal.tally_result.votes_merkle_root}</code>
-                </details>
+                )}
               </div>
             )}
           </div>

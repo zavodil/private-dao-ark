@@ -23,6 +23,45 @@ function App() {
 
   const contractId = process.env.REACT_APP_CONTRACT_ID || 'privatedao.testnet';
   const network = process.env.REACT_APP_NEAR_NETWORK || 'testnet';
+  const rpcUrl = process.env.REACT_APP_NEAR_RPC_URL || (
+    network === 'testnet'
+      ? 'https://rpc.testnet.near.org'
+      : 'https://rpc.mainnet.near.org'
+  );
+
+  // Helper function to call view methods via RPC
+  const viewMethod = async (method: string, args: any = {}) => {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'dontcare',
+        method: 'query',
+        params: {
+          request_type: 'call_function',
+          finality: 'final',
+          account_id: contractId,
+          method_name: method,
+          args_base64: btoa(JSON.stringify(args)),
+        },
+      }),
+    });
+
+    const data = await response.json();
+
+    if (data.error) {
+      throw new Error(data.error.message || 'View method call failed');
+    }
+
+    const resultBytes = data.result?.result;
+    if (!resultBytes || resultBytes.length === 0) {
+      return null;
+    }
+
+    const resultStr = new TextDecoder().decode(new Uint8Array(resultBytes));
+    return JSON.parse(resultStr);
+  };
 
   // Initialize wallet on mount
   useEffect(() => {
@@ -69,61 +108,25 @@ function App() {
   };
 
   const fetchDAOInfo = async () => {
-    if (!selector) return;
-
     try {
-      const { network: networkConfig } = selector.options;
-      const provider = new (await import('near-api-js')).providers.JsonRpcProvider({
-        url: networkConfig.nodeUrl,
-      });
-
-      const result: any = await provider.query({
-        request_type: 'call_function',
-        account_id: contractId,
-        method_name: 'get_dao_info',
-        args_base64: Buffer.from(JSON.stringify({})).toString('base64'),
-        finality: 'final',
-      });
-
-      const info = JSON.parse(Buffer.from(result.result).toString());
-      setDAOInfo(info);
+      const info = await viewMethod('get_dao_info', {});
+      setDAOInfo(info as DAOInfo);
     } catch (error) {
       console.error('Failed to fetch DAO info:', error);
     }
   };
 
   const checkMembership = async () => {
-    if (!selector || !accountId) return;
+    if (!accountId) return;
 
     try {
-      const { network: networkConfig } = selector.options;
-      const provider = new (await import('near-api-js')).providers.JsonRpcProvider({
-        url: networkConfig.nodeUrl,
-      });
-
       // Check if member
-      const memberResult: any = await provider.query({
-        request_type: 'call_function',
-        account_id: contractId,
-        method_name: 'is_member',
-        args_base64: Buffer.from(JSON.stringify({ account_id: accountId })).toString('base64'),
-        finality: 'final',
-      });
-
-      const member = JSON.parse(Buffer.from(memberResult.result).toString());
-      setIsMember(member);
+      const member = await viewMethod('is_member', { account_id: accountId });
+      setIsMember(member as boolean);
 
       if (member) {
         // Check if has pubkey
-        const pubkeyResult: any = await provider.query({
-          request_type: 'call_function',
-          account_id: contractId,
-          method_name: 'get_user_pubkey',
-          args_base64: Buffer.from(JSON.stringify({ account_id: accountId })).toString('base64'),
-          finality: 'final',
-        });
-
-        const pubkey = JSON.parse(Buffer.from(pubkeyResult.result).toString());
+        const pubkey = await viewMethod('get_user_pubkey', { account_id: accountId });
         setHasPubkey(pubkey !== null);
       }
     } catch (error) {
@@ -234,6 +237,7 @@ function App() {
                 accountId={accountId}
                 contractId={contractId}
                 network={network}
+                viewMethod={viewMethod}
               />
             )}
 
@@ -253,6 +257,7 @@ function App() {
                 contractId={contractId}
                 network={network}
                 onSuccess={refreshData}
+                viewMethod={viewMethod}
               />
             )}
           </div>

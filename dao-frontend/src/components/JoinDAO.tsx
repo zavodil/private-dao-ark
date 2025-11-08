@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { WalletSelector } from '@near-wallet-selector/core';
+import { actionCreators } from '@near-js/transactions';
 
 interface JoinDAOProps {
   selector: WalletSelector | null;
@@ -33,26 +34,24 @@ export const JoinDAO: React.FC<JoinDAOProps> = ({
       const wallet = await selector.wallet();
 
       // Join DAO (public mode) - costs 0.012 NEAR (storage + OutLayer)
-      await (wallet as any).signAndSendTransaction({
+      const action = actionCreators.functionCall(
+        'join_dao',
+        {},
+        BigInt('200000000000000'), // 200 TGas
+        BigInt('12000000000000000000000') // 0.012 NEAR
+      );
+
+      await wallet.signAndSendTransaction({
         receiverId: contractId,
-        actions: [
-          {
-            type: 'FunctionCall' as const,
-            params: {
-              methodName: 'join_dao',
-              args: {},
-              gas: '100000000000000', // 100 TGas
-              deposit: '12000000000000000000000', // 0.012 NEAR
-            },
-          },
-        ],
+        actions: [action],
       });
 
-      // Refresh data after transaction
+      // Refresh data after transaction completes
+      // OutLayer execution takes longer, so wait more
       setTimeout(() => {
         onSuccess();
         setLoading(false);
-      }, 2000);
+      }, 5000);
     } catch (err: any) {
       console.error('Failed to join DAO:', err);
       setError(err.message || 'Failed to join DAO');
@@ -70,26 +69,24 @@ export const JoinDAO: React.FC<JoinDAOProps> = ({
       const wallet = await selector.wallet();
 
       // Complete join (private mode) - costs 0.01 NEAR (OutLayer only)
-      await (wallet as any).signAndSendTransaction({
+      const action = actionCreators.functionCall(
+        'complete_join',
+        {},
+        BigInt('200000000000000'), // 200 TGas
+        BigInt('10000000000000000000000') // 0.01 NEAR
+      );
+
+      await wallet.signAndSendTransaction({
         receiverId: contractId,
-        actions: [
-          {
-            type: 'FunctionCall' as const,
-            params: {
-              methodName: 'complete_join',
-              args: {},
-              gas: '100000000000000', // 100 TGas
-              deposit: '10000000000000000000000', // 0.01 NEAR
-            },
-          },
-        ],
+        actions: [action],
       });
 
-      // Refresh data after transaction
+      // Refresh data after transaction completes
+      // OutLayer execution takes longer, so wait more
       setTimeout(() => {
         onSuccess();
         setLoading(false);
-      }, 2000);
+      }, 5000);
     } catch (err: any) {
       console.error('Failed to complete join:', err);
       setError(err.message || 'Failed to complete join');

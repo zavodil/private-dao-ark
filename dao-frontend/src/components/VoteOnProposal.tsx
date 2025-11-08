@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { WalletSelector } from '@near-wallet-selector/core';
 import { Proposal } from '../types';
 import { encrypt } from 'eciesjs';
+import { actionCreators } from '@near-js/transactions';
 
 interface VoteOnProposalProps {
   selector: WalletSelector | null;
@@ -9,6 +10,7 @@ interface VoteOnProposalProps {
   contractId: string;
   network: string;
   onSuccess: () => void;
+  viewMethod: (method: string, args?: any) => Promise<any>;
 }
 
 export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
@@ -17,10 +19,11 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
   contractId,
   network,
   onSuccess,
+  viewMethod,
 }) => {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [selectedProposal, setSelectedProposal] = useState<number | null>(null);
-  const [vote, setVote] = useState<'yes' | 'no' | ''>('');
+  const [vote, setVote] = useState<'yes' | 'no' | 'dummy' | ''>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [userPubkey, setUserPubkey] = useState<string | null>(null);
@@ -31,24 +34,9 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
   }, [selector, contractId, accountId]);
 
   const fetchActiveProposals = async () => {
-    if (!selector) return;
-
     try {
-      const { network: networkConfig } = selector.options;
-      const provider = new (await import('near-api-js')).providers.JsonRpcProvider({
-        url: networkConfig.nodeUrl,
-      });
-
-      const result: any = await provider.query({
-        request_type: 'call_function',
-        account_id: contractId,
-        method_name: 'get_proposals',
-        args_base64: Buffer.from(JSON.stringify({ from_index: 0, limit: 50 })).toString('base64'),
-        finality: 'final',
-      });
-
-      const all = JSON.parse(Buffer.from(result.result).toString());
-      const active = all.filter((p: Proposal) => p.status === 'Active');
+      const all = await viewMethod('get_proposals', { from_index: 0, limit: 50 });
+      const active = (all as Proposal[]).filter((p: Proposal) => p.status === 'Active');
       setProposals(active);
     } catch (error) {
       console.error('Failed to fetch proposals:', error);
@@ -56,24 +44,11 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
   };
 
   const fetchUserPubkey = async () => {
-    if (!selector || !accountId) return;
+    if (!accountId) return;
 
     try {
-      const { network: networkConfig } = selector.options;
-      const provider = new (await import('near-api-js')).providers.JsonRpcProvider({
-        url: networkConfig.nodeUrl,
-      });
-
-      const result: any = await provider.query({
-        request_type: 'call_function',
-        account_id: contractId,
-        method_name: 'get_user_pubkey',
-        args_base64: Buffer.from(JSON.stringify({ account_id: accountId })).toString('base64'),
-        finality: 'final',
-      });
-
-      const pubkey = JSON.parse(Buffer.from(result.result).toString());
-      setUserPubkey(pubkey);
+      const pubkey = await viewMethod('get_user_pubkey', { account_id: accountId });
+      setUserPubkey(pubkey as string);
     } catch (error) {
       console.error('Failed to fetch pubkey:', error);
     }
@@ -112,28 +87,32 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
     setError(null);
 
     try {
+      // For dummy vote, generate random noise (NOT "yes" or "no")
+      // This confuses observers by hiding whether you actually voted
+      // The backend will decrypt it and ignore it (not "yes" or "no" = dummy)
+      const voteToEncrypt = vote === 'dummy'
+        ? 'dummy_' + Math.random().toString(36).substring(7)  // Random string like "dummy_x7k2p"
+        : vote;
+
       // Encrypt vote with ECIES
-      const encrypted = encryptVote(vote, userPubkey);
+      const encrypted = encryptVote(voteToEncrypt, userPubkey);
 
       const wallet = await selector.wallet();
 
-      await (wallet as any).signAndSendTransaction({
+      const action = actionCreators.functionCall(
+        'cast_vote',
+        {
+          proposal_id: selectedProposal,
+          encrypted_vote: encrypted,
+          nonce: '', // Empty string (ECIES includes nonce in ciphertext)
+        },
+        BigInt('200000000000000'), // 200 TGas
+        BigInt('2000000000000000000000') // 0.002 NEAR
+      );
+
+      await wallet.signAndSendTransaction({
         receiverId: contractId,
-        actions: [
-          {
-            type: 'FunctionCall' as const,
-            params: {
-              methodName: 'cast_vote',
-              args: {
-                proposal_id: selectedProposal,
-                encrypted_vote: encrypted,
-                nonce: '', // Empty string (ECIES includes nonce in ciphertext)
-              },
-              gas: '50000000000000', // 50 TGas
-              deposit: '2000000000000000000000', // 0.002 NEAR
-            },
-          },
-        ],
+        actions: [action],
       });
 
       setTimeout(() => {
@@ -149,40 +128,6 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
     }
   };
 
-  const handleFinalize = async (proposalId: number) => {
-    if (!selector) return;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const wallet = await selector.wallet();
-
-      await (wallet as any).signAndSendTransaction({
-        receiverId: contractId,
-        actions: [
-          {
-            type: 'FunctionCall' as const,
-            params: {
-              methodName: 'finalize_proposal',
-              args: { proposal_id: proposalId },
-              gas: '150000000000000', // 150 TGas
-              deposit: '10000000000000000000000', // 0.01 NEAR (OutLayer execution)
-            },
-          },
-        ],
-      });
-
-      setTimeout(() => {
-        onSuccess();
-        setLoading(false);
-      }, 2000);
-    } catch (err: any) {
-      console.error('Failed to finalize:', err);
-      setError(err.message || 'Failed to finalize proposal');
-      setLoading(false);
-    }
-  };
 
   if (proposals.length === 0) {
     return (
@@ -197,8 +142,8 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
     <div className="vote-on-proposal">
       <h2>Cast Your Vote</h2>
 
-      <div className="warning-box">
-        <strong>⚠️ MVP Notice:</strong> Encryption is currently placeholder only. Full ECIES implementation needed for production.
+      <div className="info-box">
+        <strong>🔒 Secure Voting:</strong> Your vote is encrypted with ECIES (secp256k1 + AES-256-GCM) before submission. Only the TEE can decrypt votes during tallying.
       </div>
 
       <div className="proposal-select">
@@ -231,21 +176,11 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
                 <p>
                   <strong>Deadline:</strong>{' '}
                   {new Date(proposal.deadline / 1_000_000).toLocaleString()}
-                  {isPastDeadline && <span className="expired"> (EXPIRED)</span>}
+                  {isPastDeadline && <span className="expired"> (EXPIRED - No new votes allowed)</span>}
                 </p>
 
-                {isPastDeadline ? (
-                  <div className="finalize-section">
-                    <p>Voting has closed. You can finalize this proposal to tally votes in TEE.</p>
-                    <button
-                      onClick={() => handleFinalize(selectedProposal)}
-                      disabled={loading}
-                      className="btn-primary"
-                    >
-                      {loading ? 'Finalizing...' : 'Finalize Proposal (0.01 NEAR)'}
-                    </button>
-                  </div>
-                ) : (
+                {/* Voting form - only if deadline not passed */}
+                {!isPastDeadline && (
                   <div className="vote-form">
                     <div className="vote-buttons">
                       <button
@@ -260,7 +195,20 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
                       >
                         👎 NO
                       </button>
+                      <button
+                        className={`vote-btn dummy ${vote === 'dummy' ? 'selected' : ''}`}
+                        onClick={() => setVote('dummy')}
+                        title="Send encrypted noise to confuse observers. Not counted in tally."
+                      >
+                        🎭 DUMMY
+                      </button>
                     </div>
+
+                    {vote === 'dummy' && (
+                      <div className="dummy-info">
+                        <strong>🎭 Dummy Vote:</strong> Sends encrypted noise (not "yes"/"no") that looks like a real vote to observers. TEE will only count "yes"/"no" votes during tallying, ignoring dummy votes. Use this to hide whether you actually voted.
+                      </div>
+                    )}
 
                     {vote && (
                       <button
@@ -268,7 +216,9 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
                         disabled={loading}
                         className="btn-primary"
                       >
-                        {loading ? 'Casting Vote...' : `Cast ${vote.toUpperCase()} Vote (0.002 NEAR)`}
+                        {loading ? 'Casting Vote...' : vote === 'dummy'
+                          ? 'Cast Dummy Vote (0.002 NEAR)'
+                          : `Cast ${vote.toUpperCase()} Vote (0.002 NEAR)`}
                       </button>
                     )}
                   </div>
@@ -285,10 +235,16 @@ export const VoteOnProposal: React.FC<VoteOnProposalProps> = ({
         <h3>🔐 Privacy Notice</h3>
         <p>
           Your vote is encrypted with your unique key before being submitted to the blockchain.
-          Only the TEE (Trusted Execution Environment) can decrypt and tally votes.
+          Only the TEE (Trusted Execution Environment) can decrypt and count votes.
         </p>
         <p>
-          <strong>Dummy votes:</strong> You can also submit encrypted dummy messages to obscure your voting patterns.
+          <strong>YES/NO votes:</strong> TEE will only count "yes" and "no" votes during tallying.
+        </p>
+        <p>
+          <strong>Dummy votes:</strong> Send encrypted noise (not "yes"/"no") that looks like a regular transaction to observers, but won't be counted. Use this to hide whether you actually voted.
+        </p>
+        <p>
+          <strong>Finalization:</strong> Go to the "Proposals" tab to finalize and count votes.
         </p>
       </div>
     </div>

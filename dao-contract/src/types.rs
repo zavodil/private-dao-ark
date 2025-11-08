@@ -72,8 +72,11 @@ pub struct Vote {
 #[borsh(crate = "near_sdk::borsh")]
 #[serde(crate = "near_sdk::serde")]
 pub struct TallyResult {
-    pub yes_count: u64,
-    pub no_count: u64,
+    pub quorum_met: bool,
+    /// Only present if quorum was met (privacy protection)
+    pub yes_count: Option<u64>,
+    /// Only present if quorum was met (privacy protection)
+    pub no_count: Option<u64>,
     pub total_votes: u64,
     pub tee_attestation: String,
     pub votes_merkle_root: String,
@@ -90,7 +93,16 @@ pub struct DAOInfo {
     pub member_count: u64,
 }
 
-/// Response from OutLayer key derivation
+/// OutLayer execution response wrapper
+#[derive(Serialize, Deserialize, JsonSchema, Debug)]
+#[serde(crate = "near_sdk::serde")]
+pub struct OutLayerResponse {
+    pub success: bool,
+    pub result: serde_json::Value,
+    pub error: Option<String>,
+}
+
+/// Response from OutLayer key derivation (inside result field)
 #[derive(Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(crate = "near_sdk::serde")]
 pub struct DeriveKeyResponse {
@@ -102,8 +114,10 @@ pub struct DeriveKeyResponse {
 #[serde(crate = "near_sdk::serde")]
 pub struct TallyResponse {
     pub proposal_id: u64,
-    pub yes_count: u64,
-    pub no_count: u64,
+    /// Only present if quorum met (privacy protection)
+    pub yes_count: Option<u64>,
+    /// Only present if quorum met (privacy protection)
+    pub no_count: Option<u64>,
     pub total_votes: u64,
     pub tee_attestation: String,
     pub votes_merkle_root: String,

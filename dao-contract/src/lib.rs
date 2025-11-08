@@ -173,11 +173,11 @@ impl PrivateDAO {
             required_deposit
         );
 
-        // Add as member
-        self.members.insert(&user, &true);
-        self.member_count += 1;
+        log!("User {} requesting to join DAO. Deriving encryption public key via OutLayer", user);
 
-        log!("User {} joined DAO. Deriving encryption public key via OutLayer", user);
+        // NOTE: User is NOT added to members yet
+        // They will be added in on_key_derived callback after successful key generation
+        // This ensures atomicity: user is only a member if they have a valid pubkey
 
         // Call OutLayer to derive user's public key
         self.request_key_derivation(user.clone(), attached.as_yoctonear())
@@ -201,6 +201,35 @@ impl PrivateDAO {
         self.member_count += 1;
 
         log!("Added {} to private DAO (pre-approved)", account_id);
+    }
+
+    /// Remove member (owner-only)
+    ///
+    /// **FOR TESTING ONLY**: Removes a member from the DAO.
+    /// In production, this should require governance vote or more strict conditions.
+    ///
+    /// Removes:
+    /// - Member status
+    /// - Public key (if exists)
+    /// - Does NOT remove votes (preserves historical data)
+    pub fn remove_member(&mut self, account_id: AccountId) {
+        self.assert_owner();
+
+        // Check if member exists
+        if !self.members.get(&account_id).unwrap_or(false) {
+            env::panic_str("Not a member");
+        }
+
+        // Remove from members
+        self.members.remove(&account_id);
+        self.member_count -= 1;
+
+        // Remove pubkey if exists
+        if self.user_pubkeys.get(&account_id).is_some() {
+            self.user_pubkeys.remove(&account_id);
+        }
+
+        log!("TESTING: Owner removed {} from DAO", account_id);
     }
 
     /// Complete join after pre-approval (Private DAO)
@@ -391,6 +420,12 @@ impl PrivateDAO {
     /// 3. OutLayer WASM decrypts votes in TEE
     /// 4. OutLayer returns tally (yes_count, no_count, total)
     /// 5. Callback updates proposal status (Passed/Rejected)
+    ///
+    /// # Timing
+    /// - Can be called **any time** after first vote is cast
+    /// - Does NOT require waiting for deadline
+    /// - Deadline only blocks NEW votes, not finalization
+    /// - This allows early finalization if quorum is reached
     #[payable]
     pub fn finalize_proposal(&mut self, proposal_id: u64) -> Promise {
         let caller = env::predecessor_account_id();
@@ -413,17 +448,21 @@ impl PrivateDAO {
             "Proposal is not active"
         );
 
-        // Check deadline passed
-        assert!(
-            env::block_timestamp() >= proposal.deadline,
-            "Voting deadline has not passed yet"
-        );
-
-        log!("Finalizing proposal {}. Tallying votes via OutLayer TEE", proposal_id);
-
         // Get all votes
         let votes = self.votes.get(&proposal_id).unwrap();
         let votes_vec: Vec<Vote> = votes.iter().collect();
+
+        // Ensure at least one vote exists
+        assert!(
+            !votes_vec.is_empty(),
+            "No votes to tally. Wait for at least one vote."
+        );
+
+        log!(
+            "Finalizing proposal {} with {} votes. Tallying via OutLayer TEE",
+            proposal_id,
+            votes_vec.len()
+        );
 
         // Call OutLayer to tally votes in TEE
         self.request_vote_tallying(proposal_id, votes_vec, attached.as_yoctonear(), caller)
@@ -451,6 +490,12 @@ impl PrivateDAO {
             "user_account": user
         });
 
+        // Call OutLayer with secrets_ref (master secret from keymaster)
+        let secrets_ref = serde_json::json!({
+            "profile": "default",
+            "account_id": "zavodil2.testnet"
+        });
+
         // Call OutLayer
         ext_outlayer::ext(OUTLAYER_CONTRACT_ID.parse().unwrap())
             .with_attached_deposit(NearToken::from_yoctonear(attached_deposit))
@@ -459,7 +504,7 @@ impl PrivateDAO {
                 code_source,
                 resource_limits,
                 serde_json::to_string(&input_data).unwrap(),
-                None, // No secrets needed for public key derivation
+                Some(secrets_ref), 
                 "Json".to_string(),
                 Some(user.clone()), // Refund to user
             )
@@ -478,6 +523,9 @@ impl PrivateDAO {
         attached_deposit: Balance,
         payer: AccountId,
     ) -> Promise {
+        // Get proposal to pass quorum info to worker
+        let proposal = self.proposals.get(&proposal_id).unwrap();
+
         let code_source = serde_json::json!({
             "repo": "https://github.com/zavodil/private-dao-ark",
             "commit": "main",
@@ -494,7 +542,9 @@ impl PrivateDAO {
             "action": "tally_votes",
             "dao_account": env::current_account_id(),
             "proposal_id": proposal_id,
-            "votes": votes
+            "votes": votes,
+            "quorum": proposal.quorum,
+            "total_members_at_creation": proposal.total_members_at_creation
         });
 
         // Call OutLayer with secrets_ref (master secret from keymaster)
@@ -526,33 +576,51 @@ impl PrivateDAO {
     pub fn on_key_derived(
         &mut self,
         user: AccountId,
-        #[callback_result] result: Result<Option<DeriveKeyResponse>, PromiseError>,
+        #[callback_result] result: Result<Option<OutLayerResponse>, PromiseError>,
     ) {
         match result {
-            Ok(Some(response)) => {
-                log!("Public key derived for {}: {}", user, response.pubkey);
+            Ok(Some(outlayer_response)) => {
+                log!("OutLayer response for {}: success={}", user, outlayer_response.success);
+
+                // Check if execution was successful
+                if !outlayer_response.success {
+                    let error_msg = outlayer_response.error.unwrap_or_else(|| "Unknown error".to_string());
+                    log!("OutLayer execution failed for {}: {}", user, error_msg);
+                    env::panic_str(&format!("OutLayer error: {}", error_msg));
+                }
+
+                // Parse result field to get DeriveKeyResponse
+                let key_response: DeriveKeyResponse = match serde_json::from_value(outlayer_response.result) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log!("Failed to parse key derivation result for {}: {}", user, e);
+                        env::panic_str(&format!("Invalid result format: {}", e));
+                    }
+                };
+
+                log!("Public key derived for {}: {}", user, key_response.pubkey);
 
                 // Store pubkey
-                self.user_pubkeys.insert(&user, &response.pubkey);
+                self.user_pubkeys.insert(&user, &key_response.pubkey);
+
+                // Add as member NOW (after successful key derivation)
+                // This ensures user is only added if they have a valid pubkey
+                if !self.members.get(&user).unwrap_or(false) {
+                    self.members.insert(&user, &true);
+                    self.member_count += 1;
+                    log!("User {} added to DAO with encryption key", user);
+                } else {
+                    log!("User {} pubkey updated (was pre-approved in private DAO)", user);
+                }
 
                 log!("User {} can now vote with encrypted ballots", user);
             }
             Ok(None) => {
                 log!("OutLayer execution failed for user {}", user);
-
-                // Remove member (failed to derive key)
-                self.members.remove(&user);
-                self.member_count -= 1;
-
                 env::panic_str("Failed to derive encryption key");
             }
             Err(e) => {
                 log!("Promise error for user {}: {:?}", user, e);
-
-                // Remove member (failed to derive key)
-                self.members.remove(&user);
-                self.member_count -= 1;
-
                 env::panic_str(&format!("Promise error: {:?}", e));
             }
         }
@@ -563,63 +631,94 @@ impl PrivateDAO {
     pub fn on_votes_tallied(
         &mut self,
         proposal_id: u64,
-        #[callback_result] result: Result<Option<TallyResponse>, PromiseError>,
+        #[callback_result] result: Result<Option<OutLayerResponse>, PromiseError>,
     ) {
         match result {
-            Ok(Some(response)) => {
-                log!(
-                    "Votes tallied for proposal {}: YES={}, NO={}, TOTAL={}",
-                    proposal_id,
-                    response.yes_count,
-                    response.no_count,
-                    response.total_votes
-                );
+            Ok(Some(outlayer_response)) => {
+                log!("OutLayer response for proposal {}: success={}", proposal_id, outlayer_response.success);
+
+                // Check if execution was successful
+                if !outlayer_response.success {
+                    let error_msg = outlayer_response.error.unwrap_or_else(|| "Unknown error".to_string());
+                    log!("OutLayer execution failed for proposal {}: {}", proposal_id, error_msg);
+                    env::panic_str(&format!("OutLayer error: {}", error_msg));
+                }
+
+                // Parse result field to get TallyResponse
+                let response: TallyResponse = match serde_json::from_value(outlayer_response.result) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log!("Failed to parse tally result for proposal {}: {}", proposal_id, e);
+                        env::panic_str(&format!("Invalid result format: {}", e));
+                    }
+                };
 
                 // Get proposal
                 let mut proposal = self.proposals.get(&proposal_id).unwrap();
 
-                // Check if quorum met
-                let quorum_met = match &proposal.quorum {
-                    QuorumType::Absolute { min_votes } => {
-                        response.total_votes >= *min_votes
-                    }
-                    QuorumType::Percentage { min_percentage } => {
-                        let required = (proposal.total_members_at_creation * *min_percentage) / 100;
-                        response.total_votes >= required
-                    }
-                    QuorumType::PercentageOfVoters { min_yes_percentage } => {
-                        if response.total_votes == 0 {
-                            false
-                        } else {
-                            let yes_percentage = (response.yes_count * 100) / response.total_votes;
-                            yes_percentage >= *min_yes_percentage
-                        }
-                    }
-                };
+                // Check if vote counts are present (quorum met in TEE)
+                let quorum_met = response.yes_count.is_some();
 
-                // Determine if passed
-                let passed = quorum_met && response.yes_count > response.no_count;
+                if quorum_met {
+                    let yes_count = response.yes_count.unwrap();
+                    let no_count = response.no_count.unwrap();
 
-                proposal.status = if passed {
-                    ProposalStatus::Passed
+                    log!(
+                        "Votes tallied for proposal {}: YES={}, NO={}, TOTAL={}, QUORUM MET",
+                        proposal_id,
+                        yes_count,
+                        no_count,
+                        response.total_votes
+                    );
+
+                    // Determine if passed (quorum met AND more yes than no)
+                    let passed = yes_count > no_count;
+
+                    proposal.status = if passed {
+                        ProposalStatus::Passed
+                    } else {
+                        ProposalStatus::Rejected
+                    };
+
+                    // Store full results
+                    proposal.tally_result = Some(TallyResult {
+                        quorum_met: true,
+                        yes_count: Some(yes_count),
+                        no_count: Some(no_count),
+                        total_votes: response.total_votes,
+                        tee_attestation: response.tee_attestation,
+                        votes_merkle_root: response.votes_merkle_root,
+                    });
                 } else {
-                    ProposalStatus::Rejected
-                };
+                    log!(
+                        "Votes tallied for proposal {}: TOTAL={}, QUORUM NOT MET (counts hidden)",
+                        proposal_id,
+                        response.total_votes
+                    );
 
-                proposal.tally_result = Some(TallyResult {
-                    yes_count: response.yes_count,
-                    no_count: response.no_count,
-                    total_votes: response.total_votes,
-                    tee_attestation: response.tee_attestation,
-                    votes_merkle_root: response.votes_merkle_root,
-                });
+                    // Quorum not met - hide vote counts
+                    proposal.status = ProposalStatus::Rejected;
+
+                    proposal.tally_result = Some(TallyResult {
+                        quorum_met: false,
+                        yes_count: None,
+                        no_count: None,
+                        total_votes: response.total_votes,
+                        tee_attestation: response.tee_attestation,
+                        votes_merkle_root: response.votes_merkle_root,
+                    });
+                }
 
                 self.proposals.insert(&proposal_id, &proposal);
 
                 log!(
                     "Proposal {} finalized: {}",
                     proposal_id,
-                    if passed { "PASSED" } else { "REJECTED" }
+                    match proposal.status {
+                        ProposalStatus::Passed => "PASSED",
+                        ProposalStatus::Rejected => "REJECTED",
+                        _ => "UNKNOWN"
+                    }
                 );
             }
             Ok(None) => {
