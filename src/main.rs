@@ -90,16 +90,16 @@ fn main() {
 
     // Get master_secret from environment (injected by OutLayer from Keymaster)
     // This secret never leaves TEE and is used to derive all user keys
-    let master_secret = match std::env::var("DAO_MASTER_SECRET") {
+    let master_secret = match std::env::var("PROTECTED_DAO_MASTER_SECRET") {
         Ok(s) => match hex::decode(&s) {
             Ok(bytes) => bytes,
             Err(e) => {
-                output_error(&format!("Invalid DAO_MASTER_SECRET hex: {}", e));
+                output_error(&format!("Invalid PROTECTED_DAO_MASTER_SECRET hex: {}", e));
                 return;
             }
         },
         Err(_) => {
-            output_error("Missing DAO_MASTER_SECRET environment variable");
+            output_error("Missing PROTECTED_DAO_MASTER_SECRET environment variable");
             return;
         }
     };
